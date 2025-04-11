@@ -1,5 +1,5 @@
-RoForge is goofy solo-made launcher for roblox. U could create modpacks/profiles to modify roblox 100x easier. It has many mods/texturepacks to make game a little bit better. It has many bugs right now but I will make it BETTER.
+🔥 RoForge 🔥 is a goofy solo-made launcher for roblox. You can create modpacks/profiles to make modding roblox 100x easier. It has a lot of mods/texturepacks to make the game a little better. It has a lot of bugs right now, but I will make it BETTER.
 
-If u have any ideas on improving it let me know! 
+If you have any ideas to improve it, let me know!
 
-Winodws sometimes thinks it's a virus btw! But u could check this code by yourself and it's harmless.
+By the way, sometimes Windows thinks it's a virus! But you can check this code yourself and it's harmless.
