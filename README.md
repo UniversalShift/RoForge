@@ -6,6 +6,6 @@ My code looks awful to be honest and I'm very sorry for that lol.
 
 If you have any ideas to improve RoForge, let me know!
 
-By the way, sometimes Windows thinks it's a virus! But you can check this code yourself and it's harmless.
+By the way, sometimes Windows Defender thinks it's a virus! But you can check this code yourself and it's harmless.
 
 ![img2](https://raw.githubusercontent.com/UniversalShift/RoForge/refs/heads/main/RoForgeIMG.png)
