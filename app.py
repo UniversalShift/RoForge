@@ -6,6 +6,7 @@ import threading
 import subprocess
 import time
 import tkinter as tk
+import queue
 
 import customtkinter as Ctk
 from PIL import Image, ImageTk
@@ -23,26 +24,221 @@ import win32con
 import win32ui
 import time
 
+current_filter = "mods"
+
+MOD_NAME_MAPPING = {
+    "Replace Font": "replace_font",
+    "Optimizer": "optimizer",
+    "Cheat": "cheat",
+    "Change celestial bodies": "celestials",
+    "Hide gui": "hidegui",
+    "Remove grass": "remove_grass_mesh",
+    "Display fps": "displayfps",
+    "Disable remotes": "disable_remotes",
+    "Unlock fps": "unlock_fps",
+    "Custom death sound": "custom_ouch_sound",
+    "Google browser": "google_browser",
+    "Chat gpt": "chat_gpt",
+    "R63 avatar": "character_meshes",
+    "Faster inputs": "faster_inputs",
+    "Graphic boost": "graphic_boost",
+    "Beautiful sky": "beautiful_sky",
+    "Anime chan sky": "anime_chan_sky",
+    "Bloxstrap Theme": "bloxstrap_theme"
+}
+
+INTERNAL_TO_DISPLAY = {v: k for k, v in MOD_NAME_MAPPING.items()}
+
+CONFLICTING_MODS = {
+    "Google browser": ["Chat gpt"],
+    "Chat gpt": ["Google browser"],
+    "Beautiful sky": ["Anime chan sky"],
+    "Anime chan sky": ["Beautiful sky"]
+}
+
+def create_client_settings():
+    folder = get_roblox_folder()
+    if folder is None:
+        print("Roblox installation not found.")
+        return None
+
+    version = os.path.basename(folder)
+
+    dst_folder = os.path.join(os.path.dirname(__file__), "RobloxCopy", version)
+    if os.path.exists(dst_folder):
+        print(f"Roblox folder with version {version} already exists in project directory.")
+        return dst_folder
+
+    shutil.copytree(folder, dst_folder)
+    print(f"Copied Roblox folder to {dst_folder}")
+
+    settings_folder = os.path.join(dst_folder, "ClientSettings")
+    if not os.path.exists(settings_folder):
+        os.makedirs(settings_folder)
+        print(f"Created ClientSettings folder at: {settings_folder}")
+
+    return dst_folder
+
+def show_loading_screen(message):
+    loading_window = Ctk.CTkToplevel(app)
+    loading_window.title("Loading...")
+    loading_window.geometry("300x150")
+    loading_window.resizable(False, False)
+    loading_window.transient(app)
+    loading_window.grab_set()
+
+    app_width = app.winfo_width()
+    app_height = app.winfo_height()
+    app_x = app.winfo_x()
+    app_y = app.winfo_y()
+    x = app_x + (app_width // 2) - 150
+    y = app_y + (app_height // 2) - 75
+    loading_window.geometry(f"+{x}+{y}")
+
+    loading_window.label = Ctk.CTkLabel(loading_window, text=message, font=Ctk.CTkFont(size=14))
+    loading_window.label.pack(pady=20, padx=20, fill='x')
+
+    loading_window.progressbar = Ctk.CTkProgressBar(loading_window, mode='indeterminate')
+    loading_window.progressbar.pack(pady=10, padx=20, fill='x')
+    loading_window.progressbar.start()
+
+    loading_window.update_idletasks()
+    return loading_window
+
+def _create_modpack_worker(name, img_path_or_none, result_queue):
+    try:
+
+        result_queue.put(("status", "Finding Roblox installation..."))
+        folder = get_roblox_folder()
+        if folder is None:
+
+            result_queue.put(("error", "Roblox installation not found."))
+            return
+
+        version = os.path.basename(folder)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        modpack_folder = os.path.join(script_dir, "ModPacks", name)
+
+        if os.path.exists(modpack_folder):
+            result_queue.put(("warning", f"Modpack '{name}' already exists."))
+            return
+
+        modpacks_dir = os.path.join(script_dir, "ModPacks")
+        if not os.path.exists(modpacks_dir):
+            os.makedirs(modpacks_dir)
+
+        result_queue.put(("status", f"Copying Roblox files ({version[:10]})..."))
+        dst_folder = os.path.join(modpack_folder, "RobloxCopy", version)
+        shutil.copytree(folder, dst_folder, copy_function=shutil.copy2, dirs_exist_ok=True)
+
+        result_queue.put(("status", "Creating settings..."))
+        settings_folder = os.path.join(dst_folder, "ClientSettings")
+        os.makedirs(settings_folder, exist_ok=True)
+        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
+        if not os.path.exists(settings_file):
+            with open(settings_file, "w") as f:
+                json.dump({}, f, indent=4)
+
+        result_queue.put(("status", "Finalizing modpack..."))
+        target_image_path = os.path.join(modpack_folder, "image.png")
+        if img_path_or_none and img_path_or_none != "None":
+             if os.path.exists(img_path_or_none):
+                 shutil.copy(img_path_or_none, target_image_path)
+             else:
+
+                 result_queue.put(("log_warning", f"Selected image not found: {img_path_or_none}. Using default."))
+                 default_img = os.path.join(images_folder, "play.png")
+                 if os.path.exists(default_img):
+                     shutil.copy(default_img, target_image_path)
+                 else:
+                     result_queue.put(("log_warning", "Default image 'play.png' not found."))
+
+        else:
+            default_img = os.path.join(images_folder, "play.png")
+            if os.path.exists(default_img):
+                shutil.copy(default_img, target_image_path)
+            else:
+                 result_queue.put(("log_warning", "Default image 'play.png' not found."))
+
+        result_queue.put(("success", name))
+
+    except Exception as e:
+        logging.error(f"Error creating modpack in worker thread: {e}", exc_info=True)
+
+        result_queue.put(("error", f"Failed to create modpack: {str(e)}"))
+
+def handle_mod_conflicts(activated_display_name):
+    modpack = selected_modpack.get()
+    if not modpack or activated_display_name not in CONFLICTING_MODS:
+        return
+
+    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+    if not os.path.exists(mod_state_path):
+        return
+
+    with open(mod_state_path, "r") as f:
+        mod_state = json.load(f)
+
+    changed = False
+    for conflicting_display_name in CONFLICTING_MODS[activated_display_name]:
+
+        internal_key = MOD_NAME_MAPPING.get(conflicting_display_name)
+        if not internal_key:
+            continue
+
+        if internal_key in mod_state and mod_state[internal_key]:
+
+            mod_state[internal_key] = False
+
+            if conflicting_display_name in mod_states:
+                mod_states[conflicting_display_name].set(False)
+
+            func_name = MOD_NAME_MAPPING.get(conflicting_display_name)
+            if func_name and func_name in mod_apply_functions:
+                mod_apply_functions[func_name](False)
+
+            changed = True
+            print(f"Disabled conflicting mod: {conflicting_display_name}")
+
+    if changed:
+        with open(mod_state_path, "w") as f:
+            json.dump(mod_state, f, indent=4)
+
 def filter_mods(filter_type):
+    global current_filter
+    current_filter = filter_type
 
     texture_packs = [
         "Replace Font",
         "Change celestial bodies",
         "Custom death sound",
         "R63 avatar",
-        "Remove grass"
+        "Remove grass",
+        "Beautiful sky",
+        "Anime chan sky",
+        "Bloxstrap Theme"
     ]
 
-    for child in mods.winfo_children():
-        if isinstance(child, Ctk.CTkFrame):
-            child.pack_forget()
+    search_term = search_entry.get().lower() if hasattr(search_entry, 'get') else ""
 
     for child in mods.winfo_children():
         if isinstance(child, Ctk.CTkFrame):
-            mod_name = child.winfo_children()[2].cget("text")
-            if (filter_type == "mods" and mod_name not in texture_packs) or \
-                    (filter_type == "texturepacks" and mod_name in texture_packs):
+            mod_name = ""
+            for widget in child.winfo_children():
+                if isinstance(widget, Ctk.CTkLabel) and widget.cget("text"):
+                    mod_name = widget.cget("text")
+                    break
+
+            matches_filter = (
+                    (filter_type == "mods" and mod_name not in texture_packs) or
+                    (filter_type == "texturepacks" and mod_name in texture_packs)
+            )
+            matches_search = search_term in mod_name.lower()
+
+            if matches_filter and matches_search:
                 child.pack(pady=10, padx=10)
+            else:
+                child.pack_forget()
 
 logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
 
@@ -90,12 +286,117 @@ def export_modpack():
         messagebox.showerror("Export Error", f"Failed to write export file: {e}")
         logging.error(f"Failed to write export file '{save_path}': {e}")
 
+def _import_modpack_worker(new_modpack_name, imported_mod_state, result_queue):
+    new_modpack_folder = os.path.join(modpacks_dir, new_modpack_name)
+    original_selected = None
+
+    try:
+
+        result_queue.put(("status", "Finding Roblox installation..."))
+        folder = get_roblox_folder()
+        selected_modpack.set(new_modpack_name)
+        create_client_settings()
+        if folder is None:
+            result_queue.put(("error", "Current Roblox installation not found. Cannot create base for import."))
+            return
+
+        version = os.path.basename(folder)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        if not os.path.exists(modpacks_dir):
+             os.makedirs(modpacks_dir)
+
+        result_queue.put(("status", f"Copying Roblox v{version}..."))
+        logging.info(f"Copying Roblox from '{folder}' to '{new_modpack_folder}' base")
+        dst_folder = os.path.join(new_modpack_folder, "RobloxCopy", version)
+
+        shutil.copytree(folder, dst_folder, copy_function=shutil.copy2, dirs_exist_ok=True)
+        logging.info(f"Copied Roblox folder to {dst_folder}")
+
+        result_queue.put(("status", "Creating settings..."))
+        settings_folder = os.path.join(dst_folder, "ClientSettings")
+        os.makedirs(settings_folder, exist_ok=True)
+        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
+        if not os.path.exists(settings_file):
+            with open(settings_file, "w") as f:
+                json.dump({}, f, indent=4)
+            logging.info(f"Created default ClientAppSettings.json file at: {settings_file}")
+
+        result_queue.put(("status", "Setting default image..."))
+        default_image_path = os.path.join(images_folder, "play.png")
+        target_image_path = os.path.join(new_modpack_folder, "image.png")
+        if os.path.exists(default_image_path):
+             shutil.copy(default_image_path, target_image_path)
+        else:
+             logging.warning("Default modpack image not found, skipping image copy.")
+             result_queue.put(("log_warning", "Default modpack image not found."))
+
+        result_queue.put(("status", "Applying mods..."))
+        logging.info(f"Applying imported mods to '{new_modpack_name}'")
+
+        applied_count = 0
+        skipped_mods = []
+        apply_errors = []
+        current_mod_state = {}
+
+        for key in mod_apply_functions.keys():
+             current_mod_state[key] = False
+
+        total_mods_to_process = len(imported_mod_state)
+        processed_count = 0
+
+        for mod_key, should_enable in imported_mod_state.items():
+            processed_count += 1
+            progress_percent = int((processed_count / total_mods_to_process) * 100) if total_mods_to_process else 0
+
+            if mod_key in mod_apply_functions:
+                current_mod_state[mod_key] = False
+                if should_enable:
+                    result_queue.put(("status", f"Applying mod: {mod_key} ({progress_percent}%)"))
+                    try:
+                        logging.info(f"Enabling mod via import: {mod_key} for {new_modpack_name}")
+
+                        mod_apply_functions[mod_key](True)
+                        current_mod_state[mod_key] = True
+                        applied_count += 1
+                    except Exception as apply_error:
+                        err_msg = f"Error applying mod '{mod_key}': {apply_error}"
+                        logging.error(f"{err_msg} during import to '{new_modpack_name}'")
+                        apply_errors.append(f"- {mod_key}: {apply_error}")
+
+                        result_queue.put(("log_warning", err_msg))
+
+            else:
+                logging.warning(f"Imported mod list contains unknown mod key '{mod_key}'. Skipping.")
+                skipped_mods.append(mod_key)
+                result_queue.put(("log_warning", f"Unknown mod key in import file: '{mod_key}'. Skipped."))
+
+        result_queue.put(("status", "Saving mod state..."))
+        new_mod_state_path = os.path.join(new_modpack_folder, "mod_state.json")
+        with open(new_mod_state_path, "w") as f:
+            json.dump(current_mod_state, f, indent=4)
+        logging.info(f"Saved final mod state to {new_mod_state_path}")
+
+        result_queue.put(("success", (new_modpack_name, applied_count, skipped_mods, apply_errors)))
+
+    except (FileNotFoundError, PermissionError, OSError, Exception) as e:
+        logging.exception(f"Error during import worker thread for '{new_modpack_name}': {e}")
+
+        if os.path.exists(new_modpack_folder):
+            try:
+                result_queue.put(("status", "Error occurred. Cleaning up..."))
+                shutil.rmtree(new_modpack_folder, ignore_errors=True)
+                logging.info(f"Cleaned up partially created folder: {new_modpack_folder}")
+            except Exception as cleanup_e:
+                logging.error(f"Failed to cleanup folder {new_modpack_folder} after error: {cleanup_e}")
+
+        result_queue.put(("error", f"Import failed: {str(e)}"))
+
 def import_modpack():
     import_path = filedialog.askopenfilename(
         filetypes=[("RoForge Modpack List", "*.roforgepack"), ("All Files", "*.*")],
         title="Import Modpack List"
     )
-
     if not import_path:
         return
 
@@ -117,115 +418,90 @@ def import_modpack():
     if not new_modpack_name:
         return
 
-    new_modpack_folder = os.path.join(modpacks_dir, new_modpack_name)
-    if os.path.exists(new_modpack_folder):
+    target_modpack_folder = os.path.join(modpacks_dir, new_modpack_name)
+    if os.path.exists(target_modpack_folder):
          messagebox.showerror("Import Error", f"A modpack named '{new_modpack_name}' already exists.")
          return
 
-    logging.info(f"Starting import process for new modpack: {new_modpack_name}")
+    loading_window = show_loading_screen(f"Starting import: '{new_modpack_name}'...")
+
+    result_queue = queue.Queue()
+
+    original_selected_modpack = selected_modpack.get()
+
+    thread = threading.Thread(
+        target=_import_modpack_worker,
+        args=(new_modpack_name, imported_mod_state, result_queue),
+        daemon=True
+    )
+    thread.start()
+
+    app.after(100, check_import_modpack_queue, loading_window, result_queue, new_modpack_name, original_selected_modpack)
+
+def check_import_modpack_queue(loading_window, result_queue, imported_name, original_selection):
     try:
-        folder = get_roblox_folder()
-        if folder is None:
-            messagebox.showerror("Import Error", "Current Roblox installation not found. Cannot create base for import.")
-            logging.error("Roblox installation not found during import.")
-            return
+        message = result_queue.get_nowait()
+        msg_type, msg_data = message
 
-        version = os.path.basename(folder)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        _modpacks_dir = os.path.join(script_dir, "ModPacks")
-        if not os.path.exists(_modpacks_dir):
-            os.makedirs(_modpacks_dir)
-            logging.info(f"Created ModPacks folder at: {_modpacks_dir}")
+        if msg_type == "status":
+            if loading_window.winfo_exists():
+                loading_window.label.configure(text=msg_data)
 
-        dst_folder = os.path.join(new_modpack_folder, "RobloxCopy", version)
-        print(f"Creating new modpack '{new_modpack_name}' based on Roblox version '{version}'...")
-        logging.info(f"Copying Roblox from '{folder}' to '{dst_folder}'")
-        shutil.copytree(folder, dst_folder, copy_function=shutil.copy2)
-        logging.info(f"Copied Roblox folder to {dst_folder}")
+            app.after(100, check_import_modpack_queue, loading_window, result_queue, imported_name, original_selection)
+        elif msg_type == "log_warning":
+             logging.warning(f"Import Warning ({imported_name}): {msg_data}")
 
-        settings_folder = os.path.join(dst_folder, "ClientSettings")
-        if not os.path.exists(settings_folder):
-            os.makedirs(settings_folder)
-            logging.info(f"Created ClientSettings folder at: {settings_folder}")
+             app.after(100, check_import_modpack_queue, loading_window, result_queue, imported_name, original_selection)
+        elif msg_type == "error":
+            if loading_window.winfo_exists():
+                loading_window.destroy()
+            messagebox.showerror("Import Error", msg_data)
 
-        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
-        if not os.path.exists(settings_file):
-            with open(settings_file, "w") as f:
-                json.dump({}, f, indent=4)
-            logging.info(f"Created default ClientAppSettings.json file at: {settings_file}")
+            if imported_name in modpacks:
+                modpacks.remove(imported_name)
+                update_modpacks_frame()
 
-        default_image_path = os.path.join(images_folder, "play.png")
-        target_image_path = os.path.join(new_modpack_folder, "image.png")
-        if os.path.exists(default_image_path):
-             shutil.copy(default_image_path, target_image_path)
-        else:
-             logging.warning("Default modpack image not found, skipping image copy.")
+        elif msg_type == "success":
+            if loading_window.winfo_exists():
+                loading_window.destroy()
 
-        print(f"Applying mods to '{new_modpack_name}'...")
-        logging.info(f"Applying imported mods to '{new_modpack_name}'")
-        original_selected = selected_modpack.get()
-        selected_modpack.set(new_modpack_name)
+            created_name, applied_count, skipped_mods, apply_errors = msg_data
 
-        applied_count = 0
-        skipped_mods = []
+            if created_name not in modpacks:
+                modpacks.append(created_name)
+            update_modpacks_frame()
 
-        current_mod_state = {key: False for key in mod_apply_functions.keys()}
+            selected_modpack.set(created_name)
 
-        for mod_key, should_enable in imported_mod_state.items():
-            if mod_key in mod_apply_functions:
-                if should_enable:
-                    try:
-                        print(f"  Enabling mod: {mod_key}")
+            success_message = f"Successfully imported modpack '{created_name}'!"
+            if skipped_mods:
+                success_message += f"\n\nSkipped unknown mods:\n{', '.join(skipped_mods)}"
+            if apply_errors:
+                 success_message += f"\n\nErrors applying some mods (check logs):\n" + "\n".join(apply_errors)
 
-                        mod_apply_functions[mod_key](True)
-                        current_mod_state[mod_key] = True
-                        applied_count += 1
-                    except Exception as apply_error:
-                        messagebox.showwarning("Import Warning", f"Error applying mod '{mod_key}' to '{new_modpack_name}':\n{apply_error}\n\nCheck logs for details. Skipping this mod.")
-                        logging.error(f"Error applying mod '{mod_key}' during import to '{new_modpack_name}': {apply_error}")
-                        current_mod_state[mod_key] = False
-                else:
-                     current_mod_state[mod_key] = False
-            else:
-                logging.warning(f"Imported mod list contains unknown mod key '{mod_key}'. Skipping.")
-                skipped_mods.append(mod_key)
+            messagebox.showinfo("Import Successful", success_message)
+            logging.info(f"Import complete for '{created_name}'. Applied {applied_count} mods. Skipped: {len(skipped_mods)}. Errors: {len(apply_errors)}.")
 
-        new_mod_state_path = os.path.join(new_modpack_folder, "mod_state.json")
-        with open(new_mod_state_path, "w") as f:
-            json.dump(current_mod_state, f, indent=4)
-        logging.info(f"Saved final mod state to {new_mod_state_path}")
+    except queue.Empty:
 
-        selected_modpack.set(original_selected)
-        modpacks.append(new_modpack_name)
-        update_modpacks_frame()
-        print(f"Import complete for '{new_modpack_name}'. Applied {applied_count} mods.")
-        logging.info(f"Import complete for '{new_modpack_name}'. Applied {applied_count} mods.")
-        success_message = f"Successfully imported modpack '{new_modpack_name}'!"
-        if skipped_mods:
-            success_message += f"\n\nNote: The following mods from the import file were unknown and skipped:\n{', '.join(skipped_mods)}"
-        messagebox.showinfo("Import Successful", success_message)
-
-    except FileNotFoundError as fnf_error:
-        messagebox.showerror("Import Error", f"File not found during import process:\n{fnf_error}")
-        logging.error(f"FileNotFoundError during import: {fnf_error}")
-
-        if os.path.exists(new_modpack_folder):
-            shutil.rmtree(new_modpack_folder, ignore_errors=True)
-    except PermissionError as perm_error:
-         messagebox.showerror("Import Error", f"Permission denied during import process:\n{perm_error}\n\nTry running as administrator.")
-         logging.error(f"PermissionError during import: {perm_error}")
-         if os.path.exists(new_modpack_folder):
-            shutil.rmtree(new_modpack_folder, ignore_errors=True)
+        app.after(100, check_import_modpack_queue, loading_window, result_queue, imported_name, original_selection)
     except Exception as e:
-        messagebox.showerror("Import Error", f"An unexpected error occurred during import:\n{e}\n\nCheck logs for details.")
-        logging.exception("Unexpected error during import process.")
 
-        if os.path.exists(new_modpack_folder):
-            shutil.rmtree(new_modpack_folder, ignore_errors=True)
+        logging.error(f"Error processing import queue: {e}", exc_info=True)
+        if loading_window.winfo_exists():
+            loading_window.destroy()
+        messagebox.showerror("Error", f"An unexpected error occurred while checking import status: {e}")
 
-        if new_modpack_name in modpacks: modpacks.remove(new_modpack_name)
-        update_modpacks_frame()
-        selected_modpack.set(original_selected if 'original_selected' in locals() else "")
+        target_modpack_folder = os.path.join(modpacks_dir, imported_name)
+        if os.path.exists(target_modpack_folder):
+             try:
+                 shutil.rmtree(target_modpack_folder, ignore_errors=True)
+                 logging.warning(f"Cleaned up {target_modpack_folder} due to queue check error.")
+             except Exception as cleanup_e:
+                 logging.error(f"Failed to cleanup {target_modpack_folder} after queue check error: {cleanup_e}")
+        if imported_name in modpacks:
+            modpacks.remove(imported_name)
+            update_modpacks_frame()
 
 def button_function():
     print("button pressed")
@@ -245,29 +521,6 @@ def get_roblox_folder():
                     print(root)
                     return root
     return None
-
-def create_client_settings():
-    folder = get_roblox_folder()
-    if folder is None:
-        print("Roblox installation not found.")
-        return None
-
-    version = os.path.basename(folder)
-
-    dst_folder = os.path.join(os.path.dirname(__file__), "RobloxCopy", version)
-    if os.path.exists(dst_folder):
-        print(f"Roblox folder with version {version} already exists in project directory.")
-        return dst_folder
-
-    shutil.copytree(folder, dst_folder)
-    print(f"Copied Roblox folder to {dst_folder}")
-
-    settings_folder = os.path.join(dst_folder, "ClientSettings")
-    if not os.path.exists(settings_folder):
-        os.makedirs(settings_folder)
-        print(f"Created ClientSettings folder at: {settings_folder}")
-
-    return dst_folder
 
 def save_json(data):
     settings_folder = create_client_settings()
@@ -305,68 +558,70 @@ def update_modpacks_frame():
             y += 1
 
 def create_modpack():
+    name = name_entry.get()
+    if not name:
+        messagebox.showinfo("Info", "Please enter a name for the modpack.")
+        return
+
+    img_path_or_none = img_data.get()
+    if img_path_or_none == "":
+        img_path_or_none = None
+
+    loading_window = show_loading_screen(f"Starting creation for '{name}'...")
+
+    result_queue = queue.Queue()
+
+    thread = threading.Thread(
+        target=_create_modpack_worker,
+        args=(name, img_path_or_none, result_queue),
+        daemon=True
+    )
+    thread.start()
+
+    app.after(100, check_create_modpack_queue, loading_window, result_queue, name)
+
+def check_create_modpack_queue(loading_window, result_queue, original_name):
     try:
-        name = name_entry.get()
-        if not name:
-            print("Please enter a name for the modpack.")
-            messagebox.showinfo("Info", f"Please enter a name for the modpack.")
-            return
 
-        folder = get_roblox_folder()
-        if folder is None:
-            print("Roblox installation not found.")
-            return None
-            messagebox.showerror("Error", f"Roblox installation not found.")
+        message = result_queue.get_nowait()
+        msg_type, msg_data = message
 
-        version = os.path.basename(folder)
+        if msg_type == "status":
+            loading_window.label.configure(text=msg_data)
 
-        modpack_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ModPacks", name)
-        if os.path.exists(modpack_folder):
-            print(f"Modpack '{name}' already exists in project directory.")
-            return modpack_folder
+            app.after(100, check_create_modpack_queue, loading_window, result_queue, original_name)
+        elif msg_type == "error":
+            loading_window.destroy()
+            messagebox.showerror("Error", msg_data)
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        modpacks_dir = os.path.join(script_dir, "ModPacks")
-        if not os.path.exists(modpacks_dir):
-            os.makedirs(modpacks_dir)
-            logging.info(f"Created ModPacks folder at: {modpacks_dir}")
+        elif msg_type == "warning":
+            loading_window.destroy()
+            messagebox.showwarning("Warning", msg_data)
 
-        dst_folder = os.path.join(modpack_folder, "RobloxCopy", version)
-        shutil.copytree(folder, dst_folder, copy_function=shutil.copy2)
-        print(f"Copied Roblox folder to {dst_folder}")
-        logging.info(f"Copied Roblox folder to {dst_folder}")
+        elif msg_type == "log_warning":
+            logging.warning(msg_data)
 
-        settings_folder = os.path.join(dst_folder, "ClientSettings")
-        if not os.path.exists(settings_folder):
-            os.makedirs(settings_folder)
-            print(f"Created ClientSettings folder at: {settings_folder}")
-            logging.info(f"Created ClientSettings folder at: {settings_folder}")
+            app.after(100, check_create_modpack_queue, loading_window, result_queue, original_name)
+        elif msg_type == "success":
+            created_name = msg_data
+            loading_window.destroy()
 
-        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
-        if not os.path.exists(settings_file):
-            with open(settings_file, "w") as f:
-                json.dump({}, f, indent=4)
-            print(f"Created ClientAppSettings.json file at: {settings_file}")
-            logging.info(f"Created ClientAppSettings.json file at: {settings_file}")
+            if created_name not in modpacks:
+                modpacks.append(created_name)
+            update_modpacks_frame()
+            selected_modpack.set(created_name)
+            show_tab("Tab2")
+            messagebox.showinfo("Success", f"Modpack '{created_name}' created successfully!")
 
-        if img_data.get() != "None" and img_data.get() != "":
-            shutil.copy(img_data.get(), os.path.join(modpack_folder, "image.png"))
-        else:
-            shutil.copy(os.path.join(images_folder, "play.png"), os.path.join(modpack_folder, "image.png"))
+    except queue.Empty:
 
-        modpacks.append(name)
-        update_modpacks_frame()
-
-        selected_modpack.set(name)
-
-        update_modpacks_frame()
-
-        show_tab("Tab2")
-
+        app.after(100, check_create_modpack_queue, loading_window, result_queue, original_name)
     except Exception as e:
-        logging.error(f"Error creating modpack: {e}")
 
-    return modpack_folder
+        logging.error(f"Error processing modpack queue: {e}", exc_info=True)
+        if loading_window.winfo_exists():
+            loading_window.destroy()
+        messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
 def show_tab(tab):
     Tab1Frame.place_forget()
@@ -377,6 +632,9 @@ def show_tab(tab):
         Tab1Frame.place(x=10, y=10)
     elif tab == "Tab2":
         Tab2Frame.place(x=10, y=10)
+
+        if hasattr(search_entry, 'delete'):
+            search_entry.delete(0, "end")
 
         filter_mods("mods")
 
@@ -414,6 +672,9 @@ def show_tab(tab):
             mod_states["R63 avatar"].set(mod_state.get("character_meshes", False))
             mod_states["Faster inputs"].set(mod_state.get("faster_inputs", False))
             mod_states["Graphic boost"].set(mod_state.get("graphic_boost", False))
+            mod_states["Beautiful sky"].set(mod_state.get("beautiful_sky", False))
+            mod_states["Anime chan sky"].set(mod_state.get("anime_chan_sky", False))
+            mod_states["Bloxstrap Theme"].set(mod_state.get("bloxstrap_theme", False))
 
     elif tab == "Tab3":
         Tab3Frame.place(x=10, y=10)
@@ -725,13 +986,66 @@ def toggle_fflag_editor():
         fflag_editor_frame.place(x=60, y=75)
         createblur3.place(x=10, y=10)
 
+def delete_selected_modpack():
+    modpack_to_delete = selected_modpack.get()
+
+    if not modpack_to_delete:
+        messagebox.showwarning("Delete Error", "No modpack selected.")
+        return
+
+    confirm = messagebox.askyesno(
+        "Confirm Deletion",
+        f"Are you sure you want to permanently delete the modpack '{modpack_to_delete}'?\n\n"
+        "This action cannot be undone and will remove all its files.",
+        icon='warning'
+    )
+
+    if not confirm:
+        logging.info(f"Deletion cancelled for modpack: {modpack_to_delete}")
+        return
+
+    modpack_path = os.path.join(modpacks_dir, modpack_to_delete)
+    logging.info(f"Attempting to delete modpack: {modpack_path}")
+
+    try:
+        if os.path.exists(modpack_path):
+
+            shutil.rmtree(modpack_path)
+            logging.info(f"Successfully deleted directory: {modpack_path}")
+
+            try:
+                modpacks.remove(modpack_to_delete)
+                logging.info(f"Removed '{modpack_to_delete}' from internal modpacks list.")
+            except ValueError:
+                logging.warning(f"Modpack '{modpack_to_delete}' was already removed from the list?")
+
+            selected_modpack.set("")
+            update_modpacks_frame()
+            show_tab("Tab1")
+            remove_modpack_tab()
+
+        else:
+            logging.warning(f"Tried to delete modpack, but path not found: {modpack_path}")
+            messagebox.showerror("Delete Error", f"Could not find the directory for modpack '{modpack_to_delete}'. It might have been already deleted.")
+
+            if modpack_to_delete in modpacks:
+                modpacks.remove(modpack_to_delete)
+                update_modpacks_frame()
+
+    except PermissionError:
+        logging.error(f"Permission denied while trying to delete {modpack_path}")
+        messagebox.showerror("Delete Error", f"Permission denied when trying to delete '{modpack_to_delete}'.\n\nTry running RoForge as an administrator.")
+    except OSError as e:
+         logging.exception(f"OS error deleting {modpack_path}: {e}")
+         messagebox.showerror("Delete Error", f"An OS error occurred trying to delete '{modpack_to_delete}':\n{e}\n\nEnsure Roblox is not running from this modpack.")
+    except Exception as e:
+        logging.exception(f"Unexpected error deleting modpack '{modpack_to_delete}'")
+        messagebox.showerror("Delete Error", f"An unexpected error occurred while deleting '{modpack_to_delete}':\n{e}")
+
 fflag_editor_button_frame = Ctk.CTkFrame(Tab2Frame, width=660, height=50, fg_color="#111111")
 
 fflag_editor_button_frame.pack_propagate(False)
 fflag_editor_button_frame.pack(pady=0, side="top")
-
-fflag_editor_button = Ctk.CTkButton(fflag_editor_button_frame, text="⚙ Fast Flags Editor", command=toggle_fflag_editor, fg_color="#111111", hover_color="#000001", height=50, font=Ctk.CTkFont(family="Impact", size=15))
-fflag_editor_button.pack(pady=0, padx=45, side="right")
 
 def launch_modpack():
     modpack = selected_modpack.get()
@@ -748,27 +1062,32 @@ def launch_modpack():
 
 upperframe2 = Ctk.CTkFrame(master=modstop, width=475, height=600, fg_color="#222222")
 upperframe2.pack_propagate(False)
-upperframe2.pack(pady=10, padx=1, side="right", expand = False)
+upperframe2.pack(pady=0, padx=1, side="right", expand = False)
 
 upperframe3 = Ctk.CTkFrame(master=upperframe2, width=200, height=600, fg_color="#222222")
 upperframe3.pack_propagate(False)
 upperframe3.pack(pady=10, padx=1, side="right", expand = False)
 
-modpack_name_label = Ctk.CTkLabel(master=upperframe2, text="", font=("Impact", 24))
-modpack_name_label.pack(pady=20, side="left")
+upperframe34 = Ctk.CTkFrame(master=upperframe2, width=400, height=600, fg_color="#222222")
+upperframe34.pack_propagate(False)
+upperframe34.pack(pady=10, padx=1, side="left", expand = False)
+
+modpack_name_label = Ctk.CTkLabel(master=upperframe34, text="", font=("Impact", 24), height=2)
+modpack_name_label.pack_propagate(False)
+modpack_name_label.pack(pady=10, side="left")
 
 upperframe4 = Ctk.CTkFrame(master=upperframe3, width=200, height=50, fg_color="#222222")
 upperframe4.pack_propagate(False)
 upperframe4.pack(pady=10, padx=1, side="top", expand = False)
 
-launch_button = Ctk.CTkButton(master=upperframe4, text="▷ Launch", command=launch_modpack, width=150, height=25, fg_color="#222222", hover_color="#000001", font=Ctk.CTkFont(family="Impact", size=22))
+launch_button = Ctk.CTkButton(master=upperframe4, text="▷ Launch", command=launch_modpack, width=110, height=25, fg_color="#222222", hover_color="#000001", font=Ctk.CTkFont(family="Impact", size=22))
 launch_button.pack(pady=0, padx=0, side="left")
 
 export_button = Ctk.CTkButton(master=upperframe4, text="📤", command=export_modpack, fg_color="#222222", hover_color="#000001", width=25, height=25, font=Ctk.CTkFont(family="Impact", size=22))
 export_button.pack(pady=0, padx=0, side="left")
 
 cancel_button = Ctk.CTkButton(master=upperframe3, text="❌", command=show_tab1, width=190, height=25, fg_color="#111111", hover_color="#000001", font=Ctk.CTkFont(family="Impact", size=22))
-cancel_button.pack(pady=0, padx=0, side="left")
+cancel_button.pack(pady=0, padx=0, side="top")
 cancel_button.pack_propagate(False)
 
 mods = Ctk.CTkScrollableFrame(master=Tab2Frame, width=800, height=600)
@@ -778,11 +1097,21 @@ label3 = Ctk.CTkFrame(master=Tab2Frame, width=400, height=2, fg_color="#555555")
 label3.pack_propagate(False)
 label3.pack(pady=3, padx=1, side="bottom", expand = False)
 
+search_frame = Ctk.CTkFrame(master=fflag_editor_button_frame, width=200, height=200, fg_color="#111111")
+search_frame.pack(pady=0, padx=0, side="left")
+search_frame.pack_propagate(False)
+
 show_mods_button = Ctk.CTkButton(fflag_editor_button_frame, text="Mods", command=lambda: filter_mods("mods"), fg_color="#111111", hover_color="#000001", height=50, font=Ctk.CTkFont(family="Impact", size=20))
 show_mods_button.pack(pady=0, padx=5, side="left")
 
 show_texturepacks_button = Ctk.CTkButton(fflag_editor_button_frame, text="Texture Packs", command=lambda: filter_mods("texturepacks"), fg_color="#111111", hover_color="#000001", height=50, font=Ctk.CTkFont(family="Impact", size=20))
 show_texturepacks_button.pack(pady=0, padx=5, side="left")
+
+fflag_editor_button = Ctk.CTkButton(fflag_editor_button_frame, text="Fast Flags", command=toggle_fflag_editor, fg_color="#111111", hover_color="#000001", height=50, font=Ctk.CTkFont(family="Impact", size=20))
+fflag_editor_button.pack(pady=0, padx=5, side="left")
+
+delete_button = Ctk.CTkButton(master=upperframe4, text="🗑",command=delete_selected_modpack, fg_color="#222222", hover_color="#000001", width=25, height=25, font=Ctk.CTkFont(family="Impact", size=22))
+delete_button.pack(pady=0, side="left")
 
 def add_mod_switch(mod_name, mod_function, icon_path):
 
@@ -1179,11 +1508,14 @@ def google_browser(enabled):
 
     if enabled:
 
+        handle_mod_conflicts("Google browser")
+
         settings["FFlagPlatformEventEnabled2"] = "True"
         settings["FStringPlatformEventUrl"] = "https://google.com/"
         settings["FFlagTopBarUseNewBadge"] = "True"
         settings["FStringTopBarBadgeLearnMoreLink"] = "https://google.com/"
         settings["FStringVoiceBetaBadgeLearnMoreLink"] = "https://google.com/"
+        settings["FFlagDebugEnableNewWebView2DevTool"] = "True"
         print(f"Enabled 'Google browser' mod for modpack '{modpack}'")
     else:
         settings.pop("FFlagPlatformEventEnabled2", None)
@@ -1191,6 +1523,7 @@ def google_browser(enabled):
         settings.pop("FFlagTopBarUseNewBadge", None)
         settings.pop("FStringTopBarBadgeLearnMoreLink", None)
         settings.pop("FStringVoiceBetaBadgeLearnMoreLink", None)
+        settings.pop("FFlagDebugEnableNewWebView2DevTool", None)
         print(f"Disabled 'Google browser' mod for modpack '{modpack}'")
 
     with open(settings_path, "w") as f:
@@ -1269,11 +1602,14 @@ def chat_gpt(enabled):
 
     if enabled:
 
+        handle_mod_conflicts("Chat gpt")
+
         settings["FFlagPlatformEventEnabled2"] = "True"
         settings["FStringPlatformEventUrl"] = "https://chatbotchatapp.com/"
         settings["FFlagTopBarUseNewBadge"] = "True"
         settings["FStringTopBarBadgeLearnMoreLink"] = "https://chatbotchatapp.com/"
         settings["FStringVoiceBetaBadgeLearnMoreLink"] = "https://chatbotchatapp.com/"
+        settings["FFlagDebugEnableNewWebView2DevTool"] = "True"
         print(f"Enabled 'Google browser' mod for modpack '{modpack}'")
     else:
         settings.pop("FFlagPlatformEventEnabled2", None)
@@ -1281,6 +1617,7 @@ def chat_gpt(enabled):
         settings.pop("FFlagTopBarUseNewBadge", None)
         settings.pop("FStringTopBarBadgeLearnMoreLink", None)
         settings.pop("FStringVoiceBetaBadgeLearnMoreLink", None)
+        settings.pop("FFlagDebugEnableNewWebView2DevTool", None)
         print(f"Disabled 'Google browser' mod for modpack '{modpack}'")
 
     with open(settings_path, "w") as f:
@@ -1386,6 +1723,9 @@ def graphic_boost(enabled):
         settings = json.load(f)
 
     if enabled:
+        settings["FFlagMovePrerenderV2"] = "True"
+        settings["FFlagCommitToGraphicsQualityFix"] = "True"
+        settings["FFlagFixGraphicsQuality"] = "True"
         settings["DFIntDebugFRMQualityLevelOverride"] = "21"
         settings["FFlagCommitToGraphicsQualityFix"] = "True"
         settings["FFlagFixGraphicsQuality"] = "True"
@@ -1397,6 +1737,9 @@ def graphic_boost(enabled):
         settings["FFlagDebugForceFutureIsBrightPhase3"] = "True"
         print(f"Enabled 'Graphic boost' mod for modpack '{modpack}'")
     else:
+        settings.pop("FFlagFixGraphicsQuality", None)
+        settings.pop("FFlagCommitToGraphicsQualityFix", None)
+        settings.pop("FFlagMovePrerenderV2", None)
         settings.pop("DFIntDebugFRMQualityLevelOverride", None)
         settings.pop("FFlagCommitToGraphicsQualityFix", None)
         settings.pop("FFlagFixGraphicsQuality", None)
@@ -1468,6 +1811,323 @@ def apply_custom_ouch_sound(enabled):
     with open(mod_state_path, "w") as f:
         json.dump(mod_state, f)
 
+def beautiful_sky(enabled):
+    modpack = selected_modpack.get()
+    if not modpack:
+        print("Please select a modpack.")
+        return
+
+    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
+    version = os.listdir(roblox_path)[0]
+
+    sky_textures = {
+        'bk': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_bk.tex"),
+        'dn': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_dn.tex"),
+        'ft': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_ft.tex"),
+        'lf': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_lf.tex"),
+        'rt': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_rt.tex"),
+        'up': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_up.tex")
+    }
+
+    new_sky_path = os.path.join(os.path.dirname(__file__), "Assets", "sky", "beautiful")
+
+    if enabled:
+
+        handle_mod_conflicts("Beautiful sky")
+
+        backup_path = os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "backup")
+        if not os.path.exists(backup_path):
+            os.makedirs(backup_path)
+
+        for direction in ['bk', 'dn', 'ft', 'lf', 'rt', 'up']:
+            original_path = sky_textures[direction]
+            backup_file = os.path.join(backup_path, f"sky512_{direction}_original.tex")
+
+            if os.path.exists(original_path):
+                shutil.copy2(original_path, backup_file)
+
+            new_texture = os.path.join(new_sky_path, f"sky512_{direction}.tex")
+            if os.path.exists(new_texture):
+                shutil.copy2(new_texture, original_path)
+
+        print(f"Replaced outdoor sky textures for modpack '{modpack}'")
+    else:
+
+        backup_path = os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "backup")
+        if os.path.exists(backup_path):
+            for direction in ['bk', 'dn', 'ft', 'lf', 'rt', 'up']:
+                original_path = sky_textures[direction]
+                backup_file = os.path.join(backup_path, f"sky512_{direction}_original.tex")
+
+                if os.path.exists(backup_file):
+                    shutil.copy2(backup_file, original_path)
+
+        print(f"Restored original outdoor sky textures for modpack '{modpack}'")
+
+    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+    mod_state = {}
+    if os.path.exists(mod_state_path):
+        with open(mod_state_path, "r") as f:
+            mod_state = json.load(f)
+
+    mod_state["beautiful_sky"] = enabled
+
+    with open(mod_state_path, "w") as f:
+        json.dump(mod_state, f, indent=4)
+
+def anime_chan_sky(enabled):
+    modpack = selected_modpack.get()
+    if not modpack:
+        print("Please select a modpack.")
+        return
+
+    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
+    version = os.listdir(roblox_path)[0]
+
+    sky_textures = {
+        'bk': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_bk.tex"),
+        'dn': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_dn.tex"),
+        'ft': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_ft.tex"),
+        'lf': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_lf.tex"),
+        'rt': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_rt.tex"),
+        'up': os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "sky512_up.tex")
+    }
+
+    new_sky_path = os.path.join(os.path.dirname(__file__), "Assets", "sky", "chan")
+
+    if enabled:
+
+        handle_mod_conflicts("Anime chan sky")
+
+        backup_path = os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "backup")
+        if not os.path.exists(backup_path):
+            os.makedirs(backup_path)
+
+        for direction in ['bk', 'dn', 'ft', 'lf', 'rt', 'up']:
+            original_path = sky_textures[direction]
+            backup_file = os.path.join(backup_path, f"sky512_{direction}_original.tex")
+
+            if os.path.exists(original_path):
+                shutil.copy2(original_path, backup_file)
+
+            new_texture = os.path.join(new_sky_path, f"sky512_{direction}.tex")
+            if os.path.exists(new_texture):
+                shutil.copy2(new_texture, original_path)
+
+        print(f"Replaced outdoor sky textures for modpack '{modpack}'")
+    else:
+
+        backup_path = os.path.join(roblox_path, version, "PlatformContent", "pc", "textures", "sky", "backup")
+        if os.path.exists(backup_path):
+            for direction in ['bk', 'dn', 'ft', 'lf', 'rt', 'up']:
+                original_path = sky_textures[direction]
+                backup_file = os.path.join(backup_path, f"sky512_{direction}_original.tex")
+
+                if os.path.exists(backup_file):
+                    shutil.copy2(backup_file, original_path)
+
+        print(f"Restored original outdoor sky textures for modpack '{modpack}'")
+
+    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+    mod_state = {}
+    if os.path.exists(mod_state_path):
+        with open(mod_state_path, "r") as f:
+            mod_state = json.load(f)
+
+    mod_state["anime_chan_sky"] = enabled
+
+    with open(mod_state_path, "w") as f:
+        json.dump(mod_state, f, indent=4)
+
+def apply_bloxstrap_theme(enabled):
+    """Applies or removes the Bloxstrap theme to the selected modpack."""
+    modpack = selected_modpack.get()
+    if not modpack:
+        print("Error: Please select a modpack first.")
+
+        return
+
+    modpacks_base_dir = modpacks_dir
+    modpack_path = os.path.join(modpacks_base_dir, modpack)
+    roblox_copy_path = os.path.join(modpack_path, "RobloxCopy")
+
+    if not os.path.exists(roblox_copy_path):
+        print(f"Error: RobloxCopy folder not found for modpack '{modpack}' at {roblox_copy_path}")
+        return
+
+    try:
+        versions = [d for d in os.listdir(roblox_copy_path) if os.path.isdir(os.path.join(roblox_copy_path, d))]
+        if not versions:
+            print(f"Error: No version folder found inside {roblox_copy_path}")
+            return
+
+        version = versions[0]
+        roblox_version_path = os.path.join(roblox_copy_path, version)
+    except Exception as e:
+        print(f"Error accessing Roblox version folder in {roblox_copy_path}: {e}")
+        return
+
+    script_dir = os.path.dirname(__file__)
+    theme_base_path = os.path.join(script_dir, "Assets", "ui", "bloxstraptheme")
+    theme_content_path = os.path.join(theme_base_path, "content")
+    theme_extracontent_path = os.path.join(theme_base_path, "ExtraContent")
+
+    roblox_content_path = os.path.join(roblox_version_path, "content")
+    roblox_extracontent_path = os.path.join(roblox_version_path, "ExtraContent")
+
+    backup_path = os.path.join(roblox_version_path, "backup_bloxstrap_theme")
+
+    def copy_files_with_backup(src_base, dst_base, backup_base):
+        print(f"Processing: {src_base} -> {dst_base}")
+        if not os.path.exists(src_base):
+            print(f"Warning: Source path {src_base} does not exist. Skipping.")
+            return
+
+        copied_files = 0
+        errors = 0
+        for root, dirs, files in os.walk(src_base):
+
+            relative_path = os.path.relpath(root, src_base)
+            dst_dir = os.path.join(dst_base, relative_path)
+            backup_dir = os.path.join(backup_base, relative_path)
+
+            if files:
+                 os.makedirs(dst_dir, exist_ok=True)
+
+            for file in files:
+                src_file = os.path.join(root, file)
+                dst_file = os.path.join(dst_dir, file)
+                backup_file = os.path.join(backup_dir, file)
+
+                try:
+
+                    if os.path.exists(dst_file):
+
+                        if not os.path.exists(backup_file):
+                             os.makedirs(os.path.dirname(backup_file), exist_ok=True)
+                             print(f"  Backing up: {dst_file} -> {backup_file}")
+                             shutil.copy2(dst_file, backup_file)
+                        else:
+                             print(f"  Backup exists: {backup_file}")
+
+                    print(f"  Copying: {src_file} -> {dst_file}")
+                    shutil.copy2(src_file, dst_file)
+                    copied_files += 1
+
+                except Exception as e:
+                    print(f"  Error processing file {src_file}: {e}")
+                    errors += 1
+        print(f"Finished processing {src_base}. Copied: {copied_files}, Errors: {errors}")
+        return errors == 0
+
+    def restore_files_from_backup(backup_base, dst_base):
+        print(f"Restoring from: {backup_base} -> {dst_base}")
+        if not os.path.exists(backup_base):
+            print(f"Backup path {backup_base} not found. Nothing to restore.")
+            return True
+
+        restored_files = 0
+        errors = 0
+        for root, dirs, files in os.walk(backup_base):
+            relative_path = os.path.relpath(root, backup_base)
+            dst_dir = os.path.join(dst_base, relative_path)
+
+            for file in files:
+                backup_file = os.path.join(root, file)
+                dst_file = os.path.join(dst_dir, file)
+
+                try:
+
+                    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+
+                    print(f"  Restoring: {backup_file} -> {dst_file}")
+                    shutil.copy2(backup_file, dst_file)
+                    restored_files += 1
+                except Exception as e:
+                    print(f"  Error restoring file {backup_file}: {e}")
+                    errors += 1
+
+        print(f"Finished restoring {backup_base}. Restored: {restored_files}, Errors: {errors}")
+        return errors == 0
+
+    try:
+        if enabled:
+            print(f"\nApplying Bloxstrap theme to modpack '{modpack}'...")
+
+            os.makedirs(backup_path, exist_ok=True)
+
+            success1 = copy_files_with_backup(
+                theme_content_path,
+                roblox_content_path,
+                os.path.join(backup_path, "content")
+            )
+
+            success2 = copy_files_with_backup(
+                theme_extracontent_path,
+                roblox_extracontent_path,
+                os.path.join(backup_path, "ExtraContent")
+            )
+
+            if success1 and success2:
+                print(f"\nSuccessfully applied Bloxstrap theme to modpack '{modpack}'")
+                update_mod_state(modpack_path, "bloxstrap_theme", True)
+            else:
+                print(f"\nErrors occurred while applying Bloxstrap theme to modpack '{modpack}'. Check logs above.")
+
+        else:
+            print(f"\nRemoving Bloxstrap theme from modpack '{modpack}'...")
+            if not os.path.exists(backup_path):
+                print("No backup found. Assuming theme was not applied or backup was removed.")
+
+                update_mod_state(modpack_path, "bloxstrap_theme", False)
+                return
+
+            success1 = restore_files_from_backup(
+                os.path.join(backup_path, "content"),
+                roblox_content_path
+            )
+
+            success2 = restore_files_from_backup(
+                os.path.join(backup_path, "ExtraContent"),
+                roblox_extracontent_path
+            )
+
+            if success1 and success2:
+
+                try:
+                    print(f"Removing backup directory: {backup_path}")
+                    shutil.rmtree(backup_path)
+                    print(f"\nSuccessfully removed Bloxstrap theme and restored original files for modpack '{modpack}'")
+                    update_mod_state(modpack_path, "bloxstrap_theme", False)
+                except Exception as e:
+                    print(f"Error removing backup directory {backup_path}: {e}")
+
+                    update_mod_state(modpack_path, "bloxstrap_theme", False)
+            else:
+                print(f"\nErrors occurred while restoring from backup for modpack '{modpack}'. Backup NOT removed. Check logs above.")
+
+    except Exception as e:
+        print(f"\nAn unexpected error occurred during theme operation: {e}")
+
+def update_mod_state(modpack_path, key, value):
+    mod_state_path = os.path.join(modpack_path, "mod_state.json")
+    mod_state = {}
+    try:
+        if os.path.exists(mod_state_path):
+            with open(mod_state_path, "r") as f:
+                mod_state = json.load(f)
+    except Exception as e:
+        print(f"Warning: Could not read mod state file {mod_state_path}: {e}")
+
+    mod_state[key] = value
+
+    try:
+        with open(mod_state_path, "w") as f:
+            json.dump(mod_state, f, indent=4)
+        print(f"Updated mod state '{key}' to '{value}' in {mod_state_path}")
+    except Exception as e:
+        print(f"Error writing mod state file {mod_state_path}: {e}")
+
 add_mod_switch("R63 avatar", replace_character_meshes, os.path.join(images_folder, "girl.jpg"))
 add_mod_switch("Faster inputs", faster_inputs, os.path.join(images_folder, "keyboard.png"))
 add_mod_switch("Replace Font", replace_font, os.path.join(images_folder, "Replace Font.png"))
@@ -1483,6 +2143,9 @@ add_mod_switch("Custom death sound", apply_custom_ouch_sound, os.path.join(image
 add_mod_switch("Google browser", google_browser, os.path.join(images_folder,"google.png"))
 add_mod_switch("Chat gpt", chat_gpt, os.path.join(images_folder,"ChatGPT_logo.svg.png"))
 add_mod_switch("Graphic boost", graphic_boost, os.path.join(images_folder,"graphics.png"))
+add_mod_switch("Beautiful sky", beautiful_sky, os.path.join(images_folder, "beautiful.png"))
+add_mod_switch("Anime chan sky", anime_chan_sky, os.path.join(images_folder, "Chan.png"))
+add_mod_switch("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join(images_folder, "bloxstrap.png"))
 
 createblur3 = Ctk.CTkFrame(master=app, width=700, height=780, fg_color="#111111")
 
@@ -1509,6 +2172,44 @@ save_fflags_button.pack(pady=10)
 
 pywinstyles.set_opacity(createblur3, value=0.5, color="#000001")
 
+search_entry = Ctk.CTkEntry(master=search_frame, placeholder_text="Search mods...", placeholder_text_color="#292929", width=400, height=200, fg_color="#171717", border_color="#191919", font=Ctk.CTkFont(family="Impact", size=20))
+search_entry.pack(side="left", padx=10)
+
+def filter_mods_by_search(search_term):
+    search_term = search_term.lower()
+
+    texture_packs = [
+        "Replace Font",
+        "Change celestial bodies",
+        "Custom death sound",
+        "R63 avatar",
+        "Remove grass",
+        "Beautiful sky",
+        "Anime chan sky",
+        "Bloxstrap Theme",
+    ]
+
+    for child in mods.winfo_children():
+        if isinstance(child, Ctk.CTkFrame):
+            mod_name = ""
+            for widget in child.winfo_children():
+                if isinstance(widget, Ctk.CTkLabel) and widget.cget("text"):
+                    mod_name = widget.cget("text")
+                    break
+
+            matches_filter = (
+                    (current_filter == "mods" and mod_name not in texture_packs) or
+                    (current_filter == "texturepacks" and mod_name in texture_packs)
+            )
+            matches_search = search_term in mod_name.lower()
+
+            if matches_filter and matches_search:
+                child.pack(pady=10, padx=10)
+            else:
+                child.pack_forget()
+
+search_entry.bind("<KeyRelease>", lambda event: filter_mods_by_search(search_entry.get()))
+
 mod_apply_functions = {
     "replace_font": replace_font,
     "optimizer": apply_optimizer,
@@ -1524,7 +2225,9 @@ mod_apply_functions = {
     "chat_gpt": chat_gpt,
     "character_meshes": replace_character_meshes,
     "faster_inputs": faster_inputs,
-    "graphic_boost": graphic_boost
+    "graphic_boost": graphic_boost,
+    "beautiful_sky": beautiful_sky,
+    "anime_chan_sky": anime_chan_sky,
 }
 
 import_button = Ctk.CTkButton(master=middleframe, text="📥 Import", font=Ctk.CTkFont(family="Impact", size=22), command=import_modpack, fg_color="#111111", hover_color="#000001", width=155, height=50)
