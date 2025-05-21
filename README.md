@@ -1,4 +1,4 @@
-## 🔥 RoForge 🔥
+## ⚡ RoForge ⚡
 
 RoForge is a goofy solo-made launcher for Roblox. You can:
 - Create modpacks/profiles for easy modding.
