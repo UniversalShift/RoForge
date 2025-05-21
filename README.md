@@ -1,11 +1,14 @@
-## 🔥 RoForge 🔥 
+## 🔥 RoForge 🔥
 
-RoForge is a goofy solo-made launcher for roblox. You can create modpacks/profiles to make modding roblox 100x easier. It has a lot of mods/texturepacks to make the game a little better. It has a lot of bugs right now, but I will make it BETTER.
+RoForge is a goofy solo-made launcher for Roblox. You can:
+- Create modpacks/profiles for easy modding.
+- Use tons of mods/texture packs (see our [Mod Creation Guide](https://github.com/UniversalShift/RoForge/wiki/Mod-Creation)).
+- Customize Roblox to be 100x better!
 
-My code looks awful to be honest and I'm very sorry for that lol.
+It has bugs, but I’m making it BETTER. My code’s a mess—sorry, lol!
 
-If you have any ideas to improve RoForge, let me know!
+Got ideas? Let me know!
 
-By the way, sometimes Windows Defender thinks it's a virus! But you can check this code yourself and it's harmless.
+**Note**: Windows Defender may flag it, but it’s safe. Check the code yourself!
 
-![img2](https://raw.githubusercontent.com/UniversalShift/RoForge/refs/heads/main/RoForgeIMG.png)
+![RoForge Screenshot](https://raw.githubusercontent.com/UniversalShift/RoForge/refs/heads/main/RoForgeIMG.png)
