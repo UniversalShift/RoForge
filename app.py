@@ -8,6 +8,7 @@ import time
 import tkinter as tk
 import queue
 
+import zipfile
 import customtkinter as Ctk
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox, Text, Scrollbar
@@ -55,6 +56,241 @@ CONFLICTING_MODS = {
     "Beautiful sky": ["Anime chan sky"],
     "Anime chan sky": ["Beautiful sky"]
 }
+
+external_mods_dir = os.path.join(os.path.dirname(__file__), "ExternalMods")
+if not os.path.exists(external_mods_dir):
+    os.makedirs(external_mods_dir)
+
+external_mods_file = os.path.join(external_mods_dir, "external_mods.json")
+if not os.path.exists(external_mods_file):
+    with open(external_mods_file, "w") as f:
+        json.dump({}, f, indent=4)
+
+def load_external_mods():
+    with open(external_mods_file, "r") as f:
+        return json.load(f)
+
+def save_external_mods(external_mods):
+    with open(external_mods_file, "w") as f:
+        json.dump(external_mods, f, indent=4)
+
+def import_external_mod():
+    import_path = filedialog.askopenfilename(
+        filetypes=[("RoForge Mod", "*.zip"), ("All Files", "*.*")],
+        title="Import External Mod or Texture Pack"
+    )
+    if not import_path:
+        return
+
+    loading_window = show_loading_screen("Importing external mod...")
+    result_queue = queue.Queue()
+
+    thread = threading.Thread(
+        target=_import_external_mod_worker,
+        args=(import_path, result_queue),
+        daemon=True
+    )
+    thread.start()
+
+    app.after(100, check_external_mod_queue, loading_window, result_queue)
+
+def _import_external_mod_worker(zip_path, result_queue):
+    try:
+        result_queue.put(("status", "Extracting mod archive..."))
+        temp_dir = os.path.join(os.path.dirname(__file__), "TempModExtract")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+
+        config_path = os.path.join(temp_dir, "mod_config.rfmod")
+        if not os.path.exists(config_path):
+            result_queue.put(("error", "mod_config.rfmod not found in archive."))
+            shutil.rmtree(temp_dir)
+            return
+
+        with open(config_path, "r") as f:
+            mod_config = json.load(f)
+
+        mod_name = mod_config.get("name")
+        mod_type = mod_config.get("type", "mod")
+        conflicts = mod_config.get("conflicts", [])
+
+        if not mod_name or mod_type not in ["mod", "texturepack"]:
+            result_queue.put(("error", "Invalid mod_config.rfmod: Missing or invalid name/type."))
+            shutil.rmtree(temp_dir)
+            return
+
+        internal_name = f"external_{mod_name.replace(' ', '_').lower()}"
+        external_mods = load_external_mods()
+        if internal_name in external_mods:
+            result_queue.put(("warning", f"Mod '{mod_name}' already exists."))
+            shutil.rmtree(temp_dir)
+            return
+
+        mod_dir = os.path.join(external_mods_dir, internal_name)
+        if os.path.exists(mod_dir):
+            shutil.rmtree(mod_dir)
+        shutil.move(temp_dir, mod_dir)
+
+        icon_src = os.path.join(mod_dir, "icon.png")
+        icon_dst = os.path.join(mod_dir, "icon.png")
+        if not os.path.exists(icon_src):
+            shutil.copy(os.path.join(images_folder, "play.png"), icon_dst)
+
+        external_mods[internal_name] = {
+            "name": mod_name,
+            "type": mod_type,
+            "config_path": os.path.join(mod_dir, "mod_config.rfmod"),
+            "icon_path": icon_dst
+        }
+        save_external_mods(external_mods)
+
+        for modpack in modpacks:
+            mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+            mod_state = {}
+            if os.path.exists(mod_state_path):
+                with open(mod_state_path, "r") as f:
+                    mod_state = json.load(f)
+            mod_state[internal_name] = False
+            with open(mod_state_path, "w") as f:
+                json.dump(mod_state, f, indent=4)
+
+        mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
+        app.after(0, lambda: add_mod_switch(mod_name, mod_apply_functions[internal_name], external_mods[internal_name]["icon_path"]))
+
+        if mod_type == "texturepack":
+            texture_packs.append(mod_name)
+        else:
+            if mod_name in texture_packs:
+                texture_packs.remove(mod_name)
+
+        if mod_name not in MOD_NAME_MAPPING:
+            MOD_NAME_MAPPING[mod_name] = internal_name
+            INTERNAL_TO_DISPLAY[internal_name] = mod_name
+            CONFLICTING_MODS[mod_name] = conflicts
+
+        result_queue.put(("success", mod_name))
+
+    except Exception as e:
+        result_queue.put(("error", f"Failed to import mod: {str(e)}"))
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+def check_external_mod_queue(loading_window, result_queue):
+    try:
+        message = result_queue.get_nowait()
+        msg_type, msg_data = message
+
+        if msg_type == "status":
+            loading_window.label.configure(text=msg_data)
+            app.after(100, check_external_mod_queue, loading_window, result_queue)
+        elif msg_type == "error":
+            loading_window.destroy()
+            messagebox.showerror("Import Error", msg_data)
+        elif msg_type == "warning":
+            loading_window.destroy()
+            messagebox.showwarning("Warning", msg_data)
+        elif msg_type == "log_warning":
+            logging.warning(msg_data)
+            app.after(100, check_external_mod_queue, loading_window, result_queue)
+        elif msg_type == "success":
+            loading_window.destroy()
+            messagebox.showinfo("Success", f"Mod '{msg_data}' imported successfully and available for all modpacks!")
+            filter_mods(current_filter)
+
+    except queue.Empty:
+        app.after(100, check_external_mod_queue, loading_window, result_queue)
+    except Exception as e:
+        loading_window.destroy()
+        messagebox.showerror("Error", f"Unexpected error during mod import: {e}")
+
+def apply_external_mod(modpack, internal_name, mod_config, enabled):
+    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
+    version = os.listdir(roblox_path)[0]
+    settings_path = os.path.join(roblox_path, version, "ClientSettings", "ClientAppSettings.json")
+    roblox_content_path = os.path.join(roblox_path, version, "content")
+    backup_path = os.path.join(roblox_path, version, "backup_external", internal_name)
+    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+    mod_dir = os.path.join(external_mods_dir, internal_name)
+
+    fast_flags = mod_config.get("fast_flags", {})
+    replace_files = mod_config.get("replace_files", [])
+    mod_name = mod_config.get("name")
+
+    with open(mod_state_path, "r") as f:
+        mod_state = json.load(f)
+
+    if enabled:
+        handle_mod_conflicts(mod_name)
+        with open(settings_path, "r") as f:
+            settings = json.load(f)
+        settings.update(fast_flags)
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=4)
+
+        os.makedirs(backup_path, exist_ok=True)
+        for file_entry in replace_files:
+            src_rel_path = file_entry.get("source")
+            dst_rel_path = file_entry.get("destination")
+            if not src_rel_path or not dst_rel_path:
+                continue
+            src_path = os.path.join(mod_dir, src_rel_path)
+            dst_path = os.path.join(roblox_content_path, dst_rel_path)
+            if os.path.exists(src_path):
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                if os.path.exists(dst_path):
+                    shutil.copy2(dst_path, os.path.join(backup_path, dst_rel_path))
+                shutil.copy2(src_path, dst_path)
+    else:
+        with open(settings_path, "r") as f:
+            settings = json.load(f)
+        for key in fast_flags.keys():
+            settings.pop(key, None)
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=4)
+
+        for file_entry in replace_files:
+            dst_rel_path = file_entry.get("destination")
+            if not dst_rel_path:
+                continue
+            dst_path = os.path.join(roblox_content_path, dst_rel_path)
+            backup_file = os.path.join(backup_path, dst_rel_path)
+            if os.path.exists(backup_file):
+                shutil.copy2(backup_file, dst_path)
+
+    mod_state[internal_name] = enabled
+    with open(mod_state_path, "w") as f:
+        json.dump(mod_state, f, indent=4)
+
+def load_global_mods():
+    external_mods = load_external_mods()
+    for internal_name, mod_info in external_mods.items():
+        mod_name = mod_info["name"]
+        mod_type = mod_info["type"]
+        mod_config_path = mod_info["config_path"]
+        icon_path = mod_info["icon_path"]
+        with open(mod_config_path, "r") as f:
+            mod_config = json.load(f)
+        mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
+        if mod_type == "texturepack" and mod_name not in texture_packs:
+            texture_packs.append(mod_name)
+        if mod_name not in MOD_NAME_MAPPING:
+            MOD_NAME_MAPPING[mod_name] = internal_name
+            INTERNAL_TO_DISPLAY[internal_name] = mod_name
+            CONFLICTING_MODS[mod_name] = mod_config.get("conflicts", [])
+
+texture_packs = [
+    "Replace Font",
+    "Change celestial bodies",
+    "Custom death sound",
+    "R63 avatar",
+    "Remove grass",
+    "Beautiful sky",
+    "Anime chan sky",
+    "Bloxstrap Theme"
+]
 
 def create_client_settings():
     folder = get_roblox_folder()
@@ -207,20 +443,7 @@ def handle_mod_conflicts(activated_display_name):
 def filter_mods(filter_type):
     global current_filter
     current_filter = filter_type
-
-    texture_packs = [
-        "Replace Font",
-        "Change celestial bodies",
-        "Custom death sound",
-        "R63 avatar",
-        "Remove grass",
-        "Beautiful sky",
-        "Anime chan sky",
-        "Bloxstrap Theme"
-    ]
-
     search_term = search_entry.get().lower() if hasattr(search_entry, 'get') else ""
-
     for child in mods.winfo_children():
         if isinstance(child, Ctk.CTkFrame):
             mod_name = ""
@@ -228,13 +451,11 @@ def filter_mods(filter_type):
                 if isinstance(widget, Ctk.CTkLabel) and widget.cget("text"):
                     mod_name = widget.cget("text")
                     break
-
             matches_filter = (
-                    (filter_type == "mods" and mod_name not in texture_packs) or
-                    (filter_type == "texturepacks" and mod_name in texture_packs)
+                (filter_type == "mods" and mod_name not in texture_packs) or
+                (filter_type == "texturepacks" and mod_name in texture_packs)
             )
             matches_search = search_term in mod_name.lower()
-
             if matches_filter and matches_search:
                 child.pack(pady=10, padx=10)
             else:
@@ -632,50 +853,54 @@ def show_tab(tab):
         Tab1Frame.place(x=10, y=10)
     elif tab == "Tab2":
         Tab2Frame.place(x=10, y=10)
-
+        for child in mods.winfo_children():
+            child.destroy()
+        mod_states.clear()
+        add_mod_switch("R63 avatar", replace_character_meshes, os.path.join(images_folder, "girl.jpg"))
+        add_mod_switch("Faster inputs", faster_inputs, os.path.join(images_folder, "keyboard.png"))
+        add_mod_switch("Replace Font", replace_font, os.path.join(images_folder, "Replace Font.png"))
+        add_mod_switch("Optimizer", apply_optimizer, os.path.join(images_folder, "Optimizer.png"))
+        add_mod_switch("Cheat", apply_cheat, os.path.join(images_folder, "cheat.png"))
+        add_mod_switch("Change celestial bodies", apply_day_night_cycle, os.path.join(images_folder, "moon.jpg"))
+        add_mod_switch("Hide gui", apply_hide_gui, os.path.join(images_folder, "hide.png"))
+        add_mod_switch("Remove grass", apply_remove_grass_mesh, os.path.join(images_folder, "grass.png"))
+        add_mod_switch("Display fps", apply_display_fps, os.path.join(images_folder, "displayfps.png"))
+        add_mod_switch("Disable remotes", disable_remotes, os.path.join(images_folder, "RemoteEvent.png"))
+        add_mod_switch("Unlock fps", unlock_fps, os.path.join(images_folder, "unlock_fps.png"))
+        add_mod_switch("Custom death sound", apply_custom_ouch_sound, os.path.join(images_folder, "noob.png"))
+        add_mod_switch("Google browser", google_browser, os.path.join(images_folder, "google.png"))
+        add_mod_switch("Chat gpt", chat_gpt, os.path.join(images_folder, "ChatGPT_logo.svg.png"))
+        add_mod_switch("Graphic boost", graphic_boost, os.path.join(images_folder, "graphics.png"))
+        add_mod_switch("Beautiful sky", beautiful_sky, os.path.join(images_folder, "beautiful.png"))
+        add_mod_switch("Anime chan sky", anime_chan_sky, os.path.join(images_folder, "Chan.png"))
+        add_mod_switch("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join(images_folder, "bloxstrap.png"))
+        external_mods = load_external_mods()
+        for internal_name, mod_info in external_mods.items():
+            mod_name = mod_info["name"]
+            mod_config_path = mod_info["config_path"]
+            icon_path = mod_info["icon_path"]
+            with open(mod_config_path, "r") as f:
+                mod_config = json.load(f)
+            mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
+            add_mod_switch(mod_name, mod_apply_functions[internal_name], icon_path)
         if hasattr(search_entry, 'delete'):
             search_entry.delete(0, "end")
-
         filter_mods("mods")
-
         modpack = selected_modpack.get()
         if not modpack:
             return
-
         icon_path = os.path.join(modpacks_dir, modpack, "image.png")
-
         icon_image = Ctk.CTkImage(light_image=Image.open(icon_path), size=(125, 125))
-
         selected_modpack_icon_label.configure(image=icon_image)
-
         selected_modpack_icon_label.image = icon_image
-
         modpack_name_label.configure(text=f"{modpack}")
-
         mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
         if os.path.exists(mod_state_path):
             with open(mod_state_path, "r") as f:
                 mod_state = json.load(f)
-
-            mod_states["Replace Font"].set(mod_state.get("replace_font", False))
-            mod_states["Optimizer"].set(mod_state.get("optimizer", False))
-            mod_states["Cheat"].set(mod_state.get("cheat", False))
-            mod_states["Change celestial bodies"].set(mod_state.get("celestials", False))
-            mod_states["Hide gui"].set(mod_state.get("hidegui", False))
-            mod_states["Remove grass"].set(mod_state.get("remove_grass_mesh", False))
-            mod_states["Display fps"].set(mod_state.get("displayfps", False))
-            mod_states["Disable remotes"].set(mod_state.get("disable_remotes", False))
-            mod_states["Unlock fps"].set(mod_state.get("unlock_fps", False))
-            mod_states["Custom death sound"].set(mod_state.get("custom_ouch_sound", False))
-            mod_states["Google browser"].set(mod_state.get("google_browser", False))
-            mod_states["Chat gpt"].set(mod_state.get("chat_gpt", False))
-            mod_states["R63 avatar"].set(mod_state.get("character_meshes", False))
-            mod_states["Faster inputs"].set(mod_state.get("faster_inputs", False))
-            mod_states["Graphic boost"].set(mod_state.get("graphic_boost", False))
-            mod_states["Beautiful sky"].set(mod_state.get("beautiful_sky", False))
-            mod_states["Anime chan sky"].set(mod_state.get("anime_chan_sky", False))
-            mod_states["Bloxstrap Theme"].set(mod_state.get("bloxstrap_theme", False))
-
+            for mod_name, mod_state_var in mod_states.items():
+                internal_name = MOD_NAME_MAPPING.get(mod_name, f"external_{mod_name.replace(' ', '_').lower()}")
+                mod_state_var.set(mod_state.get(internal_name, False))
     elif tab == "Tab3":
         Tab3Frame.place(x=10, y=10)
 
@@ -1271,10 +1496,10 @@ def apply_optimizer(enabled):
         print(f"Enabled 'Optimizer' mod for modpack '{modpack}'")
     else:
 
-        settings["FFlagOptimizeNetwork"] = "False"
-        settings["FFlagOptimizeNetworkRouting"] = "False"
-        settings["FFlagOptimizeNetworkTransport"] = "False"
-        settings["FFlagOptimizeServerTickRate"] = "False"
+        settings.pop("FFlagOptimizeNetwork", None)
+        settings.pop("FFlagOptimizeNetworkRouting", None)
+        settings.pop("FFlagOptimizeNetworkTransport", None)
+        settings.pop("FFlagOptimizeServerTickRate", None)
         print(f"Disabled 'Optimizer' mod for modpack '{modpack}'")
 
     with open(settings_path, "w") as f:
@@ -1357,9 +1582,9 @@ def apply_hide_gui(enabled):
         print(f"Enabled 'Hide gui' mod for modpack '{modpack}'")
     else:
 
-        settings["FFlagUserShowGuiHideToggles"] = "False"
-        settings["GuiHidingApiSupport2"] = "False"
-        settings["DFIntCanHideGuiGroupId"] = "0"
+        settings.pop("FFlagUserShowGuiHideToggles", None)
+        settings.pop("GuiHidingApiSupport2", None)
+        settings.pop("DFIntCanHideGuiGroupId", None)
         print(f"Disabled 'Hide gui' mod for modpack '{modpack}'")
 
     with open(settings_path, "w") as f:
@@ -1395,7 +1620,7 @@ def apply_display_fps(enabled):
 
         print(f"Enabled 'Display fps' mod for modpack '{modpack}'")
     else:
-        settings["FFlagDebugDisplayFPS"] = "False"
+        settings.pop("FFlagDebugDisplayFPS", None)
         print(f"Disabled 'Display fps' mod for modpack '{modpack}'")
 
     with open(settings_path, "w") as f:
@@ -2236,6 +2461,9 @@ import_button.pack(pady=0, padx=0, side=Ctk.LEFT)
 Tab3Frame = Ctk.CTkScrollableFrame(master=app, width=700, height=770, fg_color="#111111")
 label = Ctk.CTkLabel(master=Tab3Frame, text="This is Tab 3", font=Ctk.CTkFont(family="Impact", size=24))
 label.pack(pady=20, padx=20)
+
+import_external_button = Ctk.CTkButton(master=middleframe, text="📥 Import Mod", font=Ctk.CTkFont(family="Impact", size=22), command=import_external_mod, fg_color="#111111", hover_color="#000001", width=155, height=50)
+import_external_button.pack(pady=0, padx=0, side=Ctk.LEFT)
 
 show_tab("Tab1")
 
