@@ -2132,6 +2132,8 @@ search_entry.pack(side="left", padx=10)
 
 '''Ui code ends here lol'''
 
+'''): I don't think this launcher is getting at least 1 download soon'''
+
 x_max = 4
 y_max = 4
 
