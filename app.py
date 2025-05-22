@@ -7,6 +7,7 @@ import subprocess
 import time
 import tkinter as tk
 import queue
+import uuid
 
 import zipfile
 import customtkinter as Ctk
@@ -74,6 +75,11 @@ def save_external_mods(external_mods):
     with open(external_mods_file, "w") as f:
         json.dump(external_mods, f, indent=4)
 
+def generate_unique_internal_name(mod_name):
+    base_name = mod_name.replace(' ', '_').lower()
+    unique_id = str(uuid.uuid4())[:8]
+    return f"external_{base_name}_{unique_id}"
+
 def import_external_mod():
     import_path = filedialog.askopenfilename(
         filetypes=[("RoForge Mod", "*.zip"), ("All Files", "*.*")],
@@ -93,6 +99,24 @@ def import_external_mod():
     thread.start()
 
     app.after(100, check_external_mod_queue, loading_window, result_queue)
+
+def validate_external_mod_entry(internal_name, mod_info):
+    """Validate an external mod entry from external_mods.json."""
+    try:
+        required_keys = ["name", "type", "config_path", "icon_path"]
+        if not all(key in mod_info for key in required_keys):
+            logging.error(f"Invalid mod entry {internal_name}: Missing required keys")
+            return False
+        if not os.path.exists(mod_info["config_path"]):
+            logging.error(f"Invalid mod entry {internal_name}: Config path {mod_info['config_path']} does not exist")
+            return False
+        if mod_info["type"] not in ["mod", "texturepack"]:
+            logging.error(f"Invalid mod entry {internal_name}: Invalid type {mod_info['type']}")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"Error validating mod entry {internal_name}: {str(e)}")
+        return False
 
 def _import_external_mod_worker(zip_path, result_queue):
     try:
@@ -123,10 +147,10 @@ def _import_external_mod_worker(zip_path, result_queue):
             shutil.rmtree(temp_dir)
             return
 
-        internal_name = f"external_{mod_name.replace(' ', '_').lower()}"
+        internal_name = generate_unique_internal_name(mod_name)
         external_mods = load_external_mods()
         if internal_name in external_mods:
-            result_queue.put(("warning", f"Mod '{mod_name}' already exists."))
+            result_queue.put(("warning", f"Mod '{mod_name}' already exists (internal collision)."))
             shutil.rmtree(temp_dir)
             return
 
@@ -154,11 +178,15 @@ def _import_external_mod_worker(zip_path, result_queue):
             if os.path.exists(mod_state_path):
                 with open(mod_state_path, "r") as f:
                     mod_state = json.load(f)
-            mod_state[internal_name] = False
+            mod_state[internal_name] = False  
             with open(mod_state_path, "w") as f:
                 json.dump(mod_state, f, indent=4)
 
-        mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
+        def mod_apply_function(enabled):
+            apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
+
+        mod_apply_functions[internal_name] = mod_apply_function
+
         app.after(0, lambda: add_mod_switch(mod_name, mod_apply_functions[internal_name], external_mods[internal_name]["icon_path"]))
 
         if mod_type == "texturepack":
@@ -206,80 +234,174 @@ def check_external_mod_queue(loading_window, result_queue):
         loading_window.destroy()
         messagebox.showerror("Error", f"Unexpected error during mod import: {e}")
 
-def apply_external_mod(modpack, internal_name, mod_config, enabled):
-    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
-    version = os.listdir(roblox_path)[0]
-    settings_path = os.path.join(roblox_path, version, "ClientSettings", "ClientAppSettings.json")
-    roblox_content_path = os.path.join(roblox_path, version, "content")
-    backup_path = os.path.join(roblox_path, version, "backup_external", internal_name)
+def reapply_enabled_mods(modpack):
+    if not modpack:
+        logging.warning("No modpack selected for reapply_enabled_mods.")
+        return
+
     mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
-    mod_dir = os.path.join(external_mods_dir, internal_name)
+    if not os.path.exists(mod_state_path):
+        logging.debug(f"No mod_state.json found for modpack {modpack}")
+        return
 
-    fast_flags = mod_config.get("fast_flags", {})
-    replace_files = mod_config.get("replace_files", [])
-    mod_name = mod_config.get("name")
+    try:
+        with open(mod_state_path, "r") as f:
+            mod_state = json.load(f)
 
-    with open(mod_state_path, "r") as f:
-        mod_state = json.load(f)
+        external_mods = load_external_mods()
+        for internal_name, enabled in mod_state.items():
+            if internal_name.startswith("external_") and enabled:
+                mod_info = external_mods.get(internal_name)
+                if not mod_info:
+                    logging.warning(f"External mod {internal_name} not found in external_mods.json")
+                    continue
+                if not validate_external_mod_entry(internal_name, mod_info):
+                    continue
+                try:
+                    with open(mod_info["config_path"], "r") as f:
+                        mod_config = json.load(f)
+                    logging.info(f"Reapplying enabled mod {mod_info['name']} ({internal_name}) for modpack {modpack}")
+                    apply_external_mod(modpack, internal_name, mod_config, True)
+                except Exception as e:
+                    logging.error(f"Failed to reapply mod {internal_name}: {str(e)}")
+    except Exception as e:
+        logging.error(f"Error reading mod_state.json for modpack {modpack}: {str(e)}")
 
-    if enabled:
-        handle_mod_conflicts(mod_name)
-        with open(settings_path, "r") as f:
-            settings = json.load(f)
-        settings.update(fast_flags)
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=4)
+def apply_external_mod(modpack, internal_name, mod_config, enabled):
+    if not modpack:
+        logging.error("No modpack selected for apply_external_mod.")
+        return
 
-        os.makedirs(backup_path, exist_ok=True)
-        for file_entry in replace_files:
-            src_rel_path = file_entry.get("source")
-            dst_rel_path = file_entry.get("destination")
-            if not src_rel_path or not dst_rel_path:
-                continue
-            src_path = os.path.join(mod_dir, src_rel_path)
-            dst_path = os.path.join(roblox_content_path, dst_rel_path)
-            if os.path.exists(src_path):
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                if os.path.exists(dst_path):
-                    shutil.copy2(dst_path, os.path.join(backup_path, dst_rel_path))
-                shutil.copy2(src_path, dst_path)
-    else:
-        with open(settings_path, "r") as f:
-            settings = json.load(f)
-        for key in fast_flags.keys():
-            settings.pop(key, None)
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=4)
+    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
+    if not os.path.exists(roblox_path):
+        logging.error(f"Roblox path not found: {roblox_path}")
+        return
 
-        for file_entry in replace_files:
-            dst_rel_path = file_entry.get("destination")
-            if not dst_rel_path:
-                continue
-            dst_path = os.path.join(roblox_content_path, dst_rel_path)
-            backup_file = os.path.join(backup_path, dst_rel_path)
-            if os.path.exists(backup_file):
-                shutil.copy2(backup_file, dst_path)
+    try:
+        version = os.listdir(roblox_path)[0]
+        settings_path = os.path.join(roblox_path, version, "ClientSettings", "ClientAppSettings.json")
+        roblox_content_path = os.path.join(roblox_path, version, "content")
+        backup_path = os.path.join(roblox_path, version, "backup_external", internal_name)
+        mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+        mod_dir = os.path.join(external_mods_dir, internal_name)
 
-    mod_state[internal_name] = enabled
-    with open(mod_state_path, "w") as f:
-        json.dump(mod_state, f, indent=4)
+        fast_flags = mod_config.get("fast_flags", {})
+        replace_files = mod_config.get("replace_files", [])
+        mod_name = mod_config.get("name")
+
+        mod_state = {}
+        if os.path.exists(mod_state_path):
+            with open(mod_state_path, "r") as f:
+                mod_state = json.load(f)
+
+        if internal_name not in mod_state:
+            mod_state[internal_name] = False
+            logging.debug(f"Initialized mod state for {internal_name} in {modpack}")
+
+        if enabled:
+            logging.info(f"Enabling external mod '{mod_name}' ({internal_name}) for modpack '{modpack}'")
+            handle_mod_conflicts(mod_name)
+
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+                settings.update(fast_flags)
+                with open(settings_path, "w") as f:
+                    json.dump(settings, f, indent=4)
+                    logging.debug(f"Updated FastFlags for {internal_name}: {fast_flags}")
+
+            os.makedirs(backup_path, exist_ok=True)
+            for file_entry in replace_files:
+                src_rel_path = file_entry.get("source")
+                dst_rel_path = file_entry.get("destination")
+                if not src_rel_path or not dst_rel_path:
+                    logging.warning(f"Invalid file entry in {internal_name}: {file_entry}")
+                    continue
+                src_path = os.path.join(mod_dir, src_rel_path)
+                dst_path = os.path.join(roblox_content_path, dst_rel_path)
+                if os.path.exists(src_path):
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    if os.path.exists(dst_path):
+                        shutil.copy2(dst_path, os.path.join(backup_path, dst_rel_path))
+                        logging.debug(f"Backed up {dst_path} to {backup_path}")
+                    shutil.copy2(src_path, dst_path)
+                    logging.debug(f"Copied {src_path} to {dst_path}")
+        else:
+            logging.info(f"Disabling external mod '{mod_name}' ({internal_name}) for modpack '{modpack}'")
+
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+                for key in fast_flags.keys():
+                    settings.pop(key, None)
+                with open(settings_path, "w") as f:
+                    json.dump(settings, f, indent=4)
+                    logging.debug(f"Removed FastFlags for {internal_name}: {fast_flags}")
+
+            for file_entry in replace_files:
+                dst_rel_path = file_entry.get("destination")
+                if not dst_rel_path:
+                    logging.warning(f"Invalid destination in {internal_name}: {file_entry}")
+                    continue
+                dst_path = os.path.join(roblox_content_path, dst_rel_path)
+                backup_file = os.path.join(backup_path, dst_rel_path)
+                if os.path.exists(backup_file):
+                    shutil.copy2(backup_file, dst_path)
+                    logging.debug(f"Restored {backup_file} to {dst_path}")
+                elif os.path.exists(dst_path):
+                    os.remove(dst_path)
+                    logging.debug(f"Removed modded file {dst_path} (no backup)")
+
+        mod_state[internal_name] = enabled
+        with open(mod_state_path, "w") as f:
+            json.dump(mod_state, f, indent=4)
+            logging.debug(f"Saved mod state for {internal_name}: {enabled}")
+
+    except Exception as e:
+        logging.error(f"Error applying external mod {internal_name} for modpack {modpack}: {str(e)}")
 
 def load_global_mods():
+    """Load all external mods from external_mods.json with validation."""
     external_mods = load_external_mods()
+    invalid_mods = []
+
     for internal_name, mod_info in external_mods.items():
-        mod_name = mod_info["name"]
-        mod_type = mod_info["type"]
-        mod_config_path = mod_info["config_path"]
-        icon_path = mod_info["icon_path"]
-        with open(mod_config_path, "r") as f:
-            mod_config = json.load(f)
-        mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
-        if mod_type == "texturepack" and mod_name not in texture_packs:
-            texture_packs.append(mod_name)
-        if mod_name not in MOD_NAME_MAPPING:
-            MOD_NAME_MAPPING[mod_name] = internal_name
-            INTERNAL_TO_DISPLAY[internal_name] = mod_name
-            CONFLICTING_MODS[mod_name] = mod_config.get("conflicts", [])
+        if not validate_external_mod_entry(internal_name, mod_info):
+            invalid_mods.append(internal_name)
+            continue
+
+        try:
+            mod_name = mod_info["name"]
+            mod_type = mod_info["type"]
+            mod_config_path = mod_info["config_path"]
+            icon_path = mod_info["icon_path"]
+
+            with open(mod_config_path, "r") as f:
+                mod_config = json.load(f)
+
+            def mod_apply_function(enabled, iname=internal_name, config=mod_config):
+                apply_external_mod(selected_modpack.get(), iname, config, enabled)
+
+            mod_apply_functions[internal_name] = mod_apply_function
+            logging.debug(f"Registered mod_apply_function for {internal_name} ({mod_name})")
+
+            if mod_type == "texturepack" and mod_name not in texture_packs:
+                texture_packs.append(mod_name)
+
+            if mod_name not in MOD_NAME_MAPPING:
+                MOD_NAME_MAPPING[mod_name] = internal_name
+                INTERNAL_TO_DISPLAY[internal_name] = mod_name
+                CONFLICTING_MODS[mod_name] = mod_config.get("conflicts", [])
+
+        except Exception as e:
+            logging.error(f"Failed to load external mod {internal_name}: {str(e)}")
+            invalid_mods.append(internal_name)
+
+    if invalid_mods:
+        for internal_name in invalid_mods:
+            external_mods.pop(internal_name, None)
+        save_external_mods(external_mods)
+        logging.warning(f"Removed invalid mod entries: {invalid_mods}")
 
 texture_packs = [
     "Replace Font",
@@ -845,6 +967,7 @@ def check_create_modpack_queue(loading_window, result_queue, original_name):
         messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
 def show_tab(tab):
+    """Show a tab and initialize mod switches with saved states."""
     Tab1Frame.place_forget()
     Tab2Frame.place_forget()
     Tab3Frame.place_forget()
@@ -853,54 +976,91 @@ def show_tab(tab):
         Tab1Frame.place(x=10, y=10)
     elif tab == "Tab2":
         Tab2Frame.place(x=10, y=10)
+
         for child in mods.winfo_children():
             child.destroy()
         mod_states.clear()
-        add_mod_switch("R63 avatar", replace_character_meshes, os.path.join(images_folder, "girl.jpg"))
-        add_mod_switch("Faster inputs", faster_inputs, os.path.join(images_folder, "keyboard.png"))
-        add_mod_switch("Replace Font", replace_font, os.path.join(images_folder, "Replace Font.png"))
-        add_mod_switch("Optimizer", apply_optimizer, os.path.join(images_folder, "Optimizer.png"))
-        add_mod_switch("Cheat", apply_cheat, os.path.join(images_folder, "cheat.png"))
-        add_mod_switch("Change celestial bodies", apply_day_night_cycle, os.path.join(images_folder, "moon.jpg"))
-        add_mod_switch("Hide gui", apply_hide_gui, os.path.join(images_folder, "hide.png"))
-        add_mod_switch("Remove grass", apply_remove_grass_mesh, os.path.join(images_folder, "grass.png"))
-        add_mod_switch("Display fps", apply_display_fps, os.path.join(images_folder, "displayfps.png"))
-        add_mod_switch("Disable remotes", disable_remotes, os.path.join(images_folder, "RemoteEvent.png"))
-        add_mod_switch("Unlock fps", unlock_fps, os.path.join(images_folder, "unlock_fps.png"))
-        add_mod_switch("Custom death sound", apply_custom_ouch_sound, os.path.join(images_folder, "noob.png"))
-        add_mod_switch("Google browser", google_browser, os.path.join(images_folder, "google.png"))
-        add_mod_switch("Chat gpt", chat_gpt, os.path.join(images_folder, "ChatGPT_logo.svg.png"))
-        add_mod_switch("Graphic boost", graphic_boost, os.path.join(images_folder, "graphics.png"))
-        add_mod_switch("Beautiful sky", beautiful_sky, os.path.join(images_folder, "beautiful.png"))
-        add_mod_switch("Anime chan sky", anime_chan_sky, os.path.join(images_folder, "Chan.png"))
-        add_mod_switch("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join(images_folder, "bloxstrap.png"))
+        mod_apply_functions.clear()  
+
+        internal_mods = [
+            ("R63 avatar", replace_character_meshes, os.path.join(images_folder, "girl.jpg")),
+            ("Faster inputs", faster_inputs, os.path.join(images_folder, "keyboard.png")),
+            ("Replace Font", replace_font, os.path.join(images_folder, "Replace Font.png")),
+            ("Optimizer", apply_optimizer, os.path.join(images_folder, "Optimizer.png")),
+            ("Cheat", apply_cheat, os.path.join(images_folder, "cheat.png")),
+            ("Change celestial bodies", apply_day_night_cycle, os.path.join(images_folder, "moon.jpg")),
+            ("Hide gui", apply_hide_gui, os.path.join(images_folder, "hide.png")),
+            ("Remove grass", apply_remove_grass_mesh, os.path.join(images_folder, "grass.png")),
+            ("Display fps", apply_display_fps, os.path.join(images_folder, "displayfps.png")),
+            ("Disable remotes", disable_remotes, os.path.join(images_folder, "RemoteEvent.png")),
+            ("Unlock fps", unlock_fps, os.path.join(images_folder, "unlock_fps.png")),
+            ("Custom death sound", apply_custom_ouch_sound, os.path.join(images_folder, "noob.png")),
+            ("Google browser", google_browser, os.path.join(images_folder, "google.png")),
+            ("Chat gpt", chat_gpt, os.path.join(images_folder, "ChatGPT_logo.svg.png")),
+            ("Graphic boost", graphic_boost, os.path.join(images_folder, "graphics.png")),
+            ("Beautiful sky", beautiful_sky, os.path.join(images_folder, "beautiful.png")),
+            ("Anime chan sky", anime_chan_sky, os.path.join(images_folder, "Chan.png")),
+            ("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join(images_folder, "bloxstrap.png")),
+        ]
+
+        for mod_name, mod_function, icon_path in internal_mods:
+            internal_name = MOD_NAME_MAPPING.get(mod_name, mod_name.lower().replace(' ', '_'))
+            mod_apply_functions[internal_name] = mod_function
+            add_mod_switch(mod_name, mod_function, icon_path)
+
         external_mods = load_external_mods()
         for internal_name, mod_info in external_mods.items():
-            mod_name = mod_info["name"]
-            mod_config_path = mod_info["config_path"]
-            icon_path = mod_info["icon_path"]
-            with open(mod_config_path, "r") as f:
-                mod_config = json.load(f)
-            mod_apply_functions[internal_name] = lambda enabled: apply_external_mod(selected_modpack.get(), internal_name, mod_config, enabled)
-            add_mod_switch(mod_name, mod_apply_functions[internal_name], icon_path)
+            if not validate_external_mod_entry(internal_name, mod_info):
+                continue
+            try:
+                mod_name = mod_info["name"]
+                mod_config_path = mod_info["config_path"]
+                icon_path = mod_info["icon_path"]
+                with open(mod_config_path, "r") as f:
+                    mod_config = json.load(f)
+
+                def mod_apply_function(enabled, iname=internal_name, config=mod_config):
+                    apply_external_mod(selected_modpack.get(), iname, config, enabled)
+
+                mod_apply_functions[internal_name] = mod_apply_function
+                add_mod_switch(mod_name, mod_apply_functions[internal_name], icon_path)
+            except Exception as e:
+                logging.error(f"Failed to add switch for external mod {internal_name}: {str(e)}")
+
+        modpack = selected_modpack.get()
+        if modpack:
+            mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+            if os.path.exists(mod_state_path):
+                try:
+                    with open(mod_state_path, "r") as f:
+                        mod_state = json.load(f)
+                    for internal_name, enabled in mod_state.items():
+
+                        mod_name = INTERNAL_TO_DISPLAY.get(internal_name)
+                        if not mod_name and internal_name in external_mods:
+                            mod_name = external_mods[internal_name]["name"]
+                        if mod_name and mod_name in mod_states:
+                            mod_states[mod_name].set(enabled)
+                            logging.debug(f"Set mod state for {mod_name} ({internal_name}): {enabled}")
+                        else:
+                            logging.warning(f"Mod {internal_name} not found in mod_states for modpack {modpack}")
+                except Exception as e:
+                    logging.error(f"Error loading mod_state.json for modpack {modpack}: {str(e)}")
+
         if hasattr(search_entry, 'delete'):
             search_entry.delete(0, "end")
         filter_mods("mods")
-        modpack = selected_modpack.get()
-        if not modpack:
-            return
-        icon_path = os.path.join(modpacks_dir, modpack, "image.png")
-        icon_image = Ctk.CTkImage(light_image=Image.open(icon_path), size=(125, 125))
-        selected_modpack_icon_label.configure(image=icon_image)
-        selected_modpack_icon_label.image = icon_image
-        modpack_name_label.configure(text=f"{modpack}")
-        mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
-        if os.path.exists(mod_state_path):
-            with open(mod_state_path, "r") as f:
-                mod_state = json.load(f)
-            for mod_name, mod_state_var in mod_states.items():
-                internal_name = MOD_NAME_MAPPING.get(mod_name, f"external_{mod_name.replace(' ', '_').lower()}")
-                mod_state_var.set(mod_state.get(internal_name, False))
+
+        if modpack:
+            icon_path = os.path.join(modpacks_dir, modpack, "image.png")
+            try:
+                icon_image = Ctk.CTkImage(light_image=Image.open(icon_path), size=(125, 125))
+                selected_modpack_icon_label.configure(image=icon_image)
+                selected_modpack_icon_label.image = icon_image
+            except Exception as e:
+                logging.warning(f"Failed to load modpack icon {icon_path}: {str(e)}")
+            modpack_name_label.configure(text=f"{modpack}")
+
     elif tab == "Tab3":
         Tab3Frame.place(x=10, y=10)
 
@@ -1339,6 +1499,11 @@ delete_button = Ctk.CTkButton(master=upperframe4, text="🗑",command=delete_sel
 delete_button.pack(pady=0, side="left")
 
 def add_mod_switch(mod_name, mod_function, icon_path):
+    """Add a mod switch to the UI with proper state initialization."""
+
+    if mod_name in mod_states:
+        logging.debug(f"Removing existing mod switch for {mod_name}")
+        del mod_states[mod_name]
 
     mod_state = Ctk.BooleanVar(value=False)
     mod_states[mod_name] = mod_state
@@ -1346,7 +1511,11 @@ def add_mod_switch(mod_name, mod_function, icon_path):
     modframe = Ctk.CTkFrame(master=mods, width=800, height=80, fg_color="#111111")
     modframe.pack_propagate(False)
 
-    icon_image = Ctk.CTkImage(light_image=Image.open(icon_path), size=(50, 50))
+    try:
+        icon_image = Ctk.CTkImage(light_image=Image.open(icon_path), size=(50, 50))
+    except Exception as e:
+        logging.warning(f"Failed to load icon {icon_path} for {mod_name}: {str(e)}")
+        icon_image = Ctk.CTkImage(light_image=Image.open(os.path.join(images_folder, "play.png")), size=(50, 50))
 
     icon_label = Ctk.CTkLabel(master=modframe, image=icon_image, text="")
     icon_label.pack(pady=10, padx=10, side="left")
@@ -1358,6 +1527,7 @@ def add_mod_switch(mod_name, mod_function, icon_path):
     modframe.pack(pady=10, padx=10)
 
     icon_label.image = icon_image
+    logging.debug(f"Added mod switch for {mod_name} with initial state {mod_state.get()}")
 
 def apply_day_night_cycle(enabled):
     modpack = selected_modpack.get()
