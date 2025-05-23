@@ -19,6 +19,9 @@ import ctypes
 import logging
 from customtkinter import CTkInputDialog
 
+
+'''Constants...'''
+
 current_filter = "mods"
 
 MOD_NAME_MAPPING = {
@@ -70,6 +73,10 @@ external_mods_file = os.path.join(external_mods_dir, "external_mods.json")
 if not os.path.exists(external_mods_file):
     with open(external_mods_file, "w") as f:
         json.dump({}, f, indent=4)
+
+
+
+'''Functions'''
 
 
 def load_external_mods():
@@ -425,7 +432,6 @@ def apply_external_mod(modpack, internal_name, mod_config, enabled):
 
 
 def load_global_mods():
-    """Load all external mods from external_mods.json with validation."""
     external_mods = load_external_mods()
     invalid_mods = []
 
@@ -2167,6 +2173,9 @@ for modpack in modpacks:
         x = 0
         y += 1
     print(x, y)
+
+
+'''Mods!'''
 
 def add_mod_switch(mod_name, mod_function, icon_path):
 
