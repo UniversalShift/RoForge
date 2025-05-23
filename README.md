@@ -14,7 +14,14 @@ Got ideas? Let me know!
 
 ![RoForge Screenshot](https://raw.githubusercontent.com/UniversalShift/RoForge/refs/heads/main/RoForgeIMG.png)
 
-Licensing
+
+
+
+
+
+
+
+## Licensing
 
 This project is licensed under the MIT License - see the [LICENSE](https://github.com/UniversalShift/RoForge/blob/main/LICENSE) file for details.
 
