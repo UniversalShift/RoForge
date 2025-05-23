@@ -23,6 +23,6 @@ Got ideas? Let me know!
 
 ## Licensing
 
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/UniversalShift/RoForge/blob/main/LICENSE) file for details.
+This project is licensed under the [MIT License](https://github.com/UniversalShift/RoForge/blob/main/LICENSE) - see the [LICENSE](https://github.com/UniversalShift/RoForge/blob/main/LICENSE) file for details.
 
 Unless otherwise specified, all files in this repository are governed by the MIT License.
