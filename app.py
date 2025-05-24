@@ -79,6 +79,102 @@ if not os.path.exists(external_mods_file):
 '''Functions'''
 
 
+def update_modpack():
+    modpack = selected_modpack.get()
+    if not modpack:
+        messagebox.showwarning("Update Error", "Please select a modpack first.")
+        return
+
+    try:
+        loading_window = show_loading_screen("Checking for updates...")
+        result_queue = queue.Queue()
+        thread = threading.Thread(
+            target=_update_modpack_worker,
+            args=(modpack, result_queue),
+            daemon=True
+        )
+        thread.start()
+        app.after(100, check_update_queue, loading_window, result_queue)
+    except Exception as e:
+        messagebox.showerror("Update Error", f"Failed to start update process: {str(e)}")
+
+
+def _update_modpack_worker(modpack_name, result_queue):
+    try:
+        result_queue.put(("status", "Checking Roblox version..."))
+        current_roblox_path = get_roblox_folder()
+        if not current_roblox_path:
+            result_queue.put(("error", "Roblox installation not found."))
+            return
+
+        current_version = os.path.basename(current_roblox_path)
+        modpack_dir = os.path.join(modpacks_dir, modpack_name)
+        roblox_copy_dir = os.path.join(modpack_dir, "RobloxCopy")
+
+        existing_versions = os.listdir(roblox_copy_dir)
+        if not existing_versions:
+            result_queue.put(("error", "No existing Roblox version found in modpack."))
+            return
+
+        existing_version = existing_versions[0]
+        if existing_version == current_version:
+            result_queue.put(("success", "already_updated"))
+            return
+
+        result_queue.put(("status", f"Updating from {existing_version} to {current_version}..."))
+
+        result_queue.put(("status", "Backing up current mod states..."))
+        mod_state_path = os.path.join(modpack_dir, "mod_state.json")
+        with open(mod_state_path, "r") as f:
+            mod_states = json.load(f)
+
+        result_queue.put(("status", "Removing old Roblox version..."))
+        shutil.rmtree(roblox_copy_dir)
+
+        result_queue.put(("status", "Copying new Roblox version..."))
+        new_version_path = os.path.join(roblox_copy_dir, current_version)
+        shutil.copytree(current_roblox_path, new_version_path)
+
+        result_queue.put(("status", "Recreating settings..."))
+        settings_dir = os.path.join(new_version_path, "ClientSettings")
+        os.makedirs(settings_dir, exist_ok=True)
+        settings_file = os.path.join(settings_dir, "ClientAppSettings.json")
+        if not os.path.exists(settings_file):
+            with open(settings_file, "w") as f:
+                json.dump({}, f, indent=4)
+
+        result_queue.put(("status", "Reapplying mods..."))
+        reapply_enabled_mods(modpack_name)
+
+        result_queue.put(("success", "updated"))
+
+    except Exception as e:
+        result_queue.put(("error", f"Update failed: {str(e)}"))
+
+
+def check_update_queue(loading_window, result_queue):
+    try:
+        message = result_queue.get_nowait()
+        msg_type, msg_data = message
+
+        if msg_type == "status":
+            loading_window.label.configure(text=msg_data)
+            app.after(100, check_update_queue, loading_window, result_queue)
+        elif msg_type == "error":
+            loading_window.destroy()
+            messagebox.showerror("Update Error", msg_data)
+        elif msg_type == "success":
+            loading_window.destroy()
+            if msg_data == "already_updated":
+                messagebox.showinfo("Info", "Modpack is already up-to-date.")
+            else:
+                messagebox.showinfo("Success", "Modpack updated successfully!")
+                selected_modpack.set("")
+                selected_modpack.set(modpack)
+                show_tab("Tab2")
+    except queue.Empty:
+        app.after(100, check_update_queue, loading_window, result_queue)
+
 def load_external_mods():
     with open(external_mods_file, "r") as f:
         return json.load(f)
@@ -1840,12 +1936,23 @@ Tab2Frame.pack_propagate(False)
 
 selected_modpack = Ctk.StringVar(value="")
 
-modstop = Ctk.CTkFrame(master=Tab2Frame, width=800, height=150)
+modstop = Ctk.CTkFrame(
+    master=Tab2Frame,
+    width=800,
+    height=150
+)
+
 modstop.pack_propagate(False)
 modstop.pack(pady=20, padx=20)
 
 selected_modpack_icon_label = Ctk.CTkLabel(
-    master=modstop, text="", image=None, width=125, height=125)
+    master=modstop,
+    text="",
+    image=None,
+    width=125,
+    height=125
+)
+
 selected_modpack_icon_label.pack(pady=10, padx=30, side="left")
 
 selected_modpack = Ctk.StringVar(value=f"")
@@ -1853,7 +1960,11 @@ modpack_menu = Ctk.CTkOptionMenu(master=Tab2Frame, variable=selected_modpack)
 
 
 fflag_editor_button_frame = Ctk.CTkFrame(
-    Tab2Frame, width=660, height=50, fg_color="#111111")
+    Tab2Frame,
+    width=660,
+    height=50,
+    fg_color="#111111"
+)
 
 fflag_editor_button_frame.pack_propagate(False)
 fflag_editor_button_frame.pack(pady=0, side="top")
@@ -1863,15 +1974,18 @@ upperframe2 = Ctk.CTkFrame(
     master=modstop,
     width=475,
     height=600,
-    fg_color="#222222")
+    fg_color="#222222"
+)
 upperframe2.pack_propagate(False)
 upperframe2.pack(pady=0, padx=1, side="right", expand=False)
 
 upperframe3 = Ctk.CTkFrame(
     master=upperframe2,
     width=200,
+    border_width=1,
     height=600,
-    fg_color="#222222")
+    fg_color="#222222"
+)
 upperframe3.pack_propagate(False)
 upperframe3.pack(pady=10, padx=1, side="right", expand=False)
 
@@ -1879,13 +1993,19 @@ upperframe34 = Ctk.CTkFrame(
     master=upperframe2,
     width=400,
     height=600,
-    fg_color="#222222")
+    fg_color="#222222"
+)
 upperframe34.pack_propagate(False)
 upperframe34.pack(pady=10, padx=1, side="left", expand=False)
 
 modpack_name_label = Ctk.CTkLabel(
-    master=upperframe34, text="", font=(
-        "Impact", 24), height=2)
+    master=upperframe34,
+    text="",
+    font=(
+        "Impact", 24
+    ),
+    height=2
+)
 modpack_name_label.pack_propagate(False)
 modpack_name_label.pack(pady=10, side="left")
 
@@ -1893,7 +2013,8 @@ upperframe4 = Ctk.CTkFrame(
     master=upperframe3,
     width=200,
     height=50,
-    fg_color="#222222")
+    fg_color="#222222"
+)
 upperframe4.pack_propagate(False)
 upperframe4.pack(pady=10, padx=1, side="top", expand=False)
 
@@ -1907,8 +2028,9 @@ launch_button = Ctk.CTkButton(
     hover_color="#000001",
     font=Ctk.CTkFont(
         family="Impact",
-         size=22))
-launch_button.pack(pady=0, padx=0, side="left")
+         size=22)
+)
+launch_button.pack(pady=0, padx=2, side="left")
 
 export_button = Ctk.CTkButton(
     master=upperframe4,
@@ -1920,21 +2042,23 @@ export_button = Ctk.CTkButton(
     height=25,
     font=Ctk.CTkFont(
         family="Impact",
-         size=22))
+         size=22)
+)
 export_button.pack(pady=0, padx=0, side="left")
 
 cancel_button = Ctk.CTkButton(
     master=upperframe3,
     text="❌",
     command=show_tab1,
-    width=190,
+    width=120,
     height=25,
     fg_color="#111111",
     hover_color="#000001",
     font=Ctk.CTkFont(
         family="Impact",
-         size=22))
-cancel_button.pack(pady=0, padx=0, side="top")
+         size=22)
+)
+cancel_button.pack(pady=0, padx=5, side="left")
 cancel_button.pack_propagate(False)
 
 mods = Ctk.CTkScrollableFrame(master=Tab2Frame, width=800, height=600)
@@ -1965,7 +2089,8 @@ show_mods_button = Ctk.CTkButton(
     height=50,
     font=Ctk.CTkFont(
         family="Impact",
-         size=20))
+         size=20)
+)
 show_mods_button.pack(pady=0, padx=5, side="left")
 
 show_texturepacks_button = Ctk.CTkButton(
@@ -1977,7 +2102,8 @@ show_texturepacks_button = Ctk.CTkButton(
     height=50,
     font=Ctk.CTkFont(
         family="Impact",
-         size=20))
+         size=20)
+)
 show_texturepacks_button.pack(pady=0, padx=5, side="left")
 
 fflag_editor_button = Ctk.CTkButton(
@@ -1989,7 +2115,8 @@ fflag_editor_button = Ctk.CTkButton(
     height=50,
     font=Ctk.CTkFont(
         family="Impact",
-         size=20))
+         size=20)
+)
 fflag_editor_button.pack(pady=0, padx=5, side="left")
 
 delete_button = Ctk.CTkButton(
@@ -2002,7 +2129,8 @@ delete_button = Ctk.CTkButton(
     height=25,
     font=Ctk.CTkFont(
         family="Impact",
-         size=22))
+         size=22)
+)
 delete_button.pack(pady=0, side="left")
 
 
@@ -2016,7 +2144,8 @@ import_button = Ctk.CTkButton(
     fg_color="#111111",
     hover_color="#000001",
     width=155,
-    height=50)
+    height=50
+)
 
 import_button.pack(pady=0, padx=0, side=Ctk.LEFT)
 
@@ -2024,14 +2153,16 @@ Tab3Frame = Ctk.CTkScrollableFrame(
     master=app,
     width=700,
     height=770,
-    fg_color="#111111")
+    fg_color="#111111"
+)
 
 label = Ctk.CTkLabel(
     master=Tab3Frame,
     text="This is Tab 3",
     font=Ctk.CTkFont(
         family="Impact",
-         size=24))
+         size=24)
+)
 
 label.pack(pady=20, padx=20)
 
@@ -2045,7 +2176,8 @@ import_external_button = Ctk.CTkButton(
     fg_color="#111111",
     hover_color="#000001",
     width=155,
-    height=50)
+    height=50
+)
 
 import_external_button.pack(pady=0, padx=0, side=Ctk.LEFT)
 
@@ -2060,13 +2192,15 @@ fflag_editor_frame = Ctk.CTkFrame(
     master=app,
     width=600,
     height=650,
-    fg_color="#111111")
+    fg_color="#111111"
+)
 
 fflag_editor_blur = Ctk.CTkFrame(
     master=app,
     width=700,
     height=702,
-    fg_color="#111111")
+    fg_color="#111111"
+)
 
 fflag_editor_blur.pack_propagate(False)
 fflag_editor_frame.pack_propagate(False)
@@ -2078,7 +2212,8 @@ text_widget = Ctk.CTkTextbox(
     wrap="none",
     width=80,
     height=20,
-    fg_color="#222222")
+    fg_color="#222222"
+)
 text_widget.pack(side="left", fill="both", expand=True)
 
 scrollbar = Ctk.CTkScrollbar(fflag_editor_frame, command=text_widget.yview)
@@ -2090,7 +2225,8 @@ label_new3 = Ctk.CTkLabel(
     text="FastFlags editor",
     font=Ctk.CTkFont(
         family="Impact",
-         size=20))
+         size=20)
+)
 
 label_new3.pack(pady=10, padx=5)
 
@@ -2103,7 +2239,8 @@ fflag_editor_button2 = Ctk.CTkButton(
     hover_color="#000001",
     font=Ctk.CTkFont(
         family="Impact",
-         size=18))
+         size=18)
+)
 
 fflag_editor_button2.pack(pady=10, padx=5)
 
@@ -2116,7 +2253,8 @@ save_fflags_button = Ctk.CTkButton(
     hover_color="#000001",
     font=Ctk.CTkFont(
         family="Impact",
-         size=18))
+         size=18)
+)
 
 save_fflags_button.pack(pady=10)
 
@@ -2132,9 +2270,22 @@ search_entry = Ctk.CTkEntry(
     border_color="#191919",
     font=Ctk.CTkFont(
         family="Impact",
-        size=20))
+        size=20)
+)
 
 search_entry.pack(side="left", padx=10)
+
+update_button = Ctk.CTkButton(
+    master=upperframe3,
+    text="🔄",
+    command=lambda: update_modpack(),
+    fg_color="#222222",
+    hover_color="#000001",
+    width=60,
+    height=25,
+    font=Ctk.CTkFont(family="Impact", size=20)
+)
+update_button.pack(pady=0, padx=5, side="right")
 
 '''Ui code ends here lol'''
 
