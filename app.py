@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import sys
 import threading
 import subprocess
 import time
@@ -81,6 +82,34 @@ if not os.path.exists(external_mods_file):
     with open(external_mods_file, "w") as f:
         json.dump({}, f, indent=4)
 
+
+def set_default_modpack(modpack_name):
+    try:
+        modpack_path = os.path.join(modpacks_dir, modpack_name, "RobloxCopy")
+        if not os.path.exists(modpack_path):
+            QMessageBox.warning(None, "Error", f"Modpack '{modpack_name}' not found!")
+            return False
+
+        version = os.listdir(modpack_path)[0]
+        roblox_exe_path = os.path.join(modpack_path, version, "RobloxPlayerBeta.exe")
+
+        if not os.path.exists(roblox_exe_path):
+            QMessageBox.warning(None, "Error", "RobloxPlayerBeta.exe not found in modpack!")
+            return False
+
+        key_path = r"Software\Classes\roblox-player\shell\open\command"
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{roblox_exe_path}" "%1"')
+        except Exception as e:
+            QMessageBox.warning(None, "Error", f"Failed to update registry: {str(e)}")
+            return False
+
+        return True
+    except Exception as e:
+        QMessageBox.critical(None, "Error", f"Failed to set default modpack: {str(e)}")
+        return False
+
 def update_mod_state(modpack_path, key, value):
     mod_state_path = os.path.join(modpack_path, "mod_state.json")
     mod_state = {}
@@ -137,8 +166,7 @@ def reapply_enabled_mods(modpack):
     try:
         with open(mod_state_path, "r") as f:
             mod_state = json.load(f)
-
-        # Apply internal mods
+            
         for internal_name, enabled in mod_state.items():
             if not internal_name.startswith("external_") and enabled:
                 func = mod_apply_functions.get(internal_name)
@@ -220,7 +248,6 @@ def get_roblox_folder():
                     print(root)
                     return root
     return None
-
 
 def generate_unique_internal_name(display_name):
     base_name = display_name.lower().replace(' ', '_')
@@ -363,14 +390,13 @@ def create_external_mod():
     dialog.setLayout(layout)
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
-        # Gather all mod data
         mod_name = name_input.text().strip()
         if not mod_name:
             QMessageBox.warning(dialog, "Error", "Mod name cannot be empty!")
             return
 
         mod_type = type_combo.currentText()
-        icon_path = select_icon()  # Get the selected icon path
+        icon_path = select_icon()
 
         if not icon_path:
             QMessageBox.warning(dialog, "Error", "Please select an icon for the mod!")
@@ -419,7 +445,6 @@ def create_external_mod():
         with open(config_path, "w") as f:
             json.dump(mod_config, f, indent=4)
 
-        # Add to external mods registry
         external_mods = load_external_mods()
         external_mods[internal_name] = {
             "name": mod_name,
@@ -439,7 +464,6 @@ def create_external_mod():
 
             mod_apply_functions[internal_name] = mod_apply_function
 
-            # Add to appropriate category
             if mod_type == "texturepack":
                 texture_packs.append(mod_name)
 
@@ -480,7 +504,6 @@ def update_all_external_mods():
             with open(config_path, "r") as f:
                 mod_config = json.load(f)
 
-            # Update the mod apply function
             def mod_apply_function(enabled, name=internal_name, config=mod_config):
                 apply_external_mod(selected_modpack, name, config, enabled)
 
@@ -512,13 +535,11 @@ def update_single_external_mod(internal_name):
         with open(config_path, "r") as f:
             mod_config = json.load(f)
 
-        # Update the mod apply function
         def mod_apply_function(enabled, name=internal_name, config=mod_config):
             apply_external_mod(selected_modpack, name, config, enabled)
 
         mod_apply_functions[internal_name] = mod_apply_function
 
-        # If currently enabled, reapply the mod
         if selected_modpack:
             mod_state_path = os.path.join(modpacks_dir, selected_modpack, "mod_state.json")
             if os.path.exists(mod_state_path):
@@ -544,17 +565,17 @@ def show_external_mod_manager():
     toolbar = QToolBar()
     import_action = QAction("Import Mod", dialog)
     create_action = QAction("Create Mod", dialog)
-    update_action = QAction("Update All", dialog)  # New action
+    update_action = QAction("Update All", dialog)
     remove_action = QAction("Remove Selected", dialog)
 
     import_action.triggered.connect(import_external_mod)
     create_action.triggered.connect(create_external_mod)
-    update_action.triggered.connect(update_all_external_mods)  # Connect to new function
+    update_action.triggered.connect(update_all_external_mods)
     remove_action.triggered.connect(lambda: remove_selected_mods(mods_table))
 
     toolbar.addAction(import_action)
     toolbar.addAction(create_action)
-    toolbar.addAction(update_action)  # Add to toolbar
+    toolbar.addAction(update_action)
     toolbar.addAction(remove_action)
     layout.addWidget(toolbar)
 
@@ -563,7 +584,7 @@ def show_external_mod_manager():
     mods_table.setHorizontalHeaderLabels(["Name", "Type", "Status", "Actions"])
     mods_table.horizontalHeader().setStretchLastSection(True)
     mods_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    mods_table.verticalHeader().setDefaultSectionSize(60)  # Increase row height
+    mods_table.verticalHeader().setDefaultSectionSize(60)
 
     external_mods = load_external_mods()
     mods_table.setRowCount(len(external_mods))
@@ -572,7 +593,6 @@ def show_external_mod_manager():
         mods_table.setItem(row, 0, QTableWidgetItem(mod_info["name"]))
         mods_table.setItem(row, 1, QTableWidgetItem(mod_info["type"]))
 
-        # Status (whether it's enabled in current modpack)
         status_item = QTableWidgetItem()
         if selected_modpack:
             mod_state_path = os.path.join(modpacks_dir, selected_modpack, "mod_state.json")
@@ -590,7 +610,6 @@ def show_external_mod_manager():
         action_layout.setContentsMargins(5, 5, 5, 5)
         action_layout.setSpacing(5)
 
-        # Add refresh button
         refresh_button = QPushButton("Refresh")
         refresh_button.setFixedSize(80, 30)
         refresh_button.setStyleSheet("""
@@ -675,7 +694,6 @@ def toggle_external_mod(internal_name):
 
     apply_external_mod(selected_modpack, internal_name, mod_config, new_state)
 
-    # Update the UI
     mod_state[internal_name] = new_state
     with open(mod_state_path, "w") as f:
         json.dump(mod_state, f, indent=4)
@@ -709,7 +727,7 @@ def edit_external_mod(internal_name):
     type_display = QLabel(mod_info["type"])
     layout.addWidget(type_label)
     layout.addWidget(type_display)
-    
+
     flags_label = QLabel("Fast Flags:")
     flags_editor = QTextEdit()
     flags_editor.setPlainText(json.dumps(mod_config.get("fast_flags", {}), indent=4))
@@ -736,7 +754,6 @@ def edit_external_mod(internal_name):
     dialog.setLayout(layout)
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
-
         new_name = name_input.text().strip()
         if not new_name:
             QMessageBox.warning(dialog, "Error", "Mod name cannot be empty!")
@@ -776,7 +793,6 @@ def edit_external_mod(internal_name):
 
 
 def remove_selected_mods(table):
-
     selected_rows = set(index.row() for index in table.selectionModel().selectedRows())
     if not selected_rows:
         QMessageBox.warning(None, "Warning", "Please select at least one mod to remove.")
@@ -815,7 +831,7 @@ def remove_selected_mods(table):
 
         save_external_mods(external_mods)
         QMessageBox.information(None, "Success", "Selected mods removed successfully!")
-        show_external_mod_manager()  # Refresh the manager
+        show_external_mod_manager()
 
 def apply_external_mod(modpack, internal_name, mod_config, enabled):
     if not modpack:
@@ -1008,7 +1024,6 @@ def _import_external_mod_worker(zip_path, result_queue):
         }
         save_external_mods(external_mods)
 
-        # Get list of modpacks from the modpacks directory
         modpacks = [d for d in os.listdir(modpacks_dir)
                     if os.path.isdir(os.path.join(modpacks_dir, d))]
 
@@ -1072,7 +1087,6 @@ def check_external_mod_queue(loading_window, result_queue):
                 "Success",
                 f"Mod '{msg_data}' imported successfully and available for all modpacks!")
 
-            # Refresh the mods display if we're in the mods page
             if hasattr(app, 'activeWindow') and isinstance(app.activeWindow(), MainWindow):
                 app.activeWindow().filter_mods(current_filter)
     except queue.Empty:
@@ -1087,7 +1101,7 @@ def import_external_mod():
     if not import_path:
         return
 
-    loading_window = LoadingDialog(None, "Importing external mod...")  # Pass None as parent
+    loading_window = LoadingDialog(None, "Importing external mod...")
     result_queue = queue.Queue()
 
     thread = threading.Thread(
@@ -2315,7 +2329,7 @@ class LoadingDialog(QDialog):
         layout = QVBoxLayout()
         self.label = QLabel(message)
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # Indeterminate mode
+        self.progress.setRange(0, 0)
 
         layout.addWidget(self.label)
         layout.addWidget(self.progress)
@@ -2339,21 +2353,17 @@ class ModSwitch(QFrame):
         layout = QHBoxLayout()
         layout.setContentsMargins(10, 5, 10, 5)
 
-        # Icon
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(50, 50)
         self.set_icon(icon_path)
         layout.addWidget(self.icon_label)
 
-        # Mod name
         self.name_label = QLabel(mod_name)
         self.name_label.setStyleSheet("font-size: 14px; color: white;")
         layout.addWidget(self.name_label)
 
-        # Spacer
         layout.addStretch()
 
-        # Toggle switch
         self.toggle = QCheckBox()
         self.toggle.setStyleSheet("""
             QCheckBox {
@@ -2384,12 +2394,11 @@ class ModSwitch(QFrame):
         try:
             img = Image.open(icon_path)
             img = img.resize((50, 50))
-            img.save("temp_icon.png")  # Save temporarily
+            img.save("temp_icon.png")
             pixmap = QPixmap("temp_icon.png")
             os.remove("temp_icon.png")
             self.icon_label.setPixmap(pixmap)
         except:
-            # Fallback icon
             pixmap = QPixmap(50, 50)
             pixmap.fill(QColor(100, 100, 100))
             self.icon_label.setPixmap(pixmap)
@@ -2478,7 +2487,7 @@ class MainWindow(QMainWindow):
         center_container = QWidget()
         center_layout = QHBoxLayout()
         center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.setSpacing(10)  # Maintain 10px gap
+        center_layout.setSpacing(10)
 
         logo_text = QLabel("RoForge")
         logo_text.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
@@ -2573,7 +2582,6 @@ class MainWindow(QMainWindow):
             self.logo_img.setPixmap(pixmap)
         except Exception as e:
             print(f"Error loading logo: {str(e)}")
-            # Fallback icon
             pixmap = QPixmap(32, 32)
             pixmap.fill(QColor(100, 100, 100))
             self.logo_img.setPixmap(pixmap)
@@ -2667,8 +2675,9 @@ class MainWindow(QMainWindow):
         self.btn_update = QPushButton("Update 🔄")
         self.btn_export = QPushButton("Export 📤")
         self.btn_delete = QPushButton("Delete ❌")
+        self.btn_set_default = QPushButton("Set as Default ⭐")
 
-        for btn in [self.btn_launch, self.btn_update, self.btn_export, self.btn_delete]:
+        for btn in [self.btn_launch, self.btn_update, self.btn_export, self.btn_delete, self.btn_set_default]:
             btn.setFixedHeight(30)
             btn.setStyleSheet("""
                 QPushButton {
@@ -2776,12 +2785,34 @@ class MainWindow(QMainWindow):
         self.btn_update.clicked.connect(self.update_modpack)
         self.btn_export.clicked.connect(self.export_modpack)
         self.btn_delete.clicked.connect(self.delete_modpack)
+        self.btn_set_default.clicked.connect(self.set_as_default_modpack)
+
         self.btn_show_mods.clicked.connect(lambda: self.filter_mods("mods"))
         self.btn_show_texturepacks.clicked.connect(lambda: self.filter_mods("texturepacks"))
         self.btn_fflags.clicked.connect(self.show_fflag_editor)
         self.search_input.textChanged.connect(self.filter_mods_by_search)
 
         self.mods_page.setLayout(layout)
+
+    def set_as_default_modpack(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Set Default Modpack",
+            f"Are you sure you want to set '{self.selected_modpack}' as the default modpack?\n"
+            "This will modify Roblox protocol associations to use this modpack when launching from browsers.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if set_default_modpack(self.selected_modpack):
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"'{self.selected_modpack}' is now the default modpack!\n"
+                    "Roblox links will now launch using this modpack.")
 
     def setup_settings_page(self):
         layout = QVBoxLayout()
@@ -2855,7 +2886,7 @@ class MainWindow(QMainWindow):
                 icon_path = os.path.join("assets", "images", "play.png")
 
             card = ModpackCard(modpack, icon_path, self.select_modpack)
-            card.setFixedSize(160, 180)  # Set fixed size for consistency
+            card.setFixedSize(160, 180)
 
             self.modpacks_grid.addWidget(card, row, col)
 
@@ -2996,7 +3027,6 @@ class MainWindow(QMainWindow):
             with open(mod_state_path, "r") as f:
                 mod_state = json.load(f)
 
-        # Only apply if state has changed
         if internal_name in mod_state and mod_state[internal_name] == state:
             return
 
@@ -3034,7 +3064,6 @@ class MainWindow(QMainWindow):
                 mod_state[internal_key] = False
                 changed = True
 
-                # Update the UI
                 for i in range(self.mods_layout.count()):
                     widget = self.mods_layout.itemAt(i).widget()
                     if isinstance(widget, ModSwitch) and widget.name_label.text() == conflicting_display_name:
@@ -3075,7 +3104,6 @@ class MainWindow(QMainWindow):
         dialog.setFixedSize(400, 300)
 
         layout = QVBoxLayout()
-
         name_label = QLabel("Modpack Name:")
         name_label.setStyleSheet("color: white;")
         self.modpack_name_input = QLineEdit()
@@ -3449,10 +3477,8 @@ class MainWindow(QMainWindow):
 
     def save_fflag_preset(self, fflags_text):
         try:
-            # Validate JSON first
             json.loads(fflags_text)
 
-            # Get preset name
             name, ok = QInputDialog.getText(
                 self,
                 "Save Preset",
