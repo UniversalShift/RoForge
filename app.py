@@ -19,7 +19,6 @@ from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from PIL import Image
 
-# Constants and other existing code remains the same
 current_filter = "mods"
 mod_states = {}
 selected_modpack = None
@@ -150,7 +149,6 @@ def reapply_enabled_mods(modpack):
                     except Exception as e:
                         logging.error(f"Failed to reapply internal mod {internal_name}: {str(e)}")
 
-        # Apply external mods
         external_mods = load_external_mods()
         for internal_name, enabled in mod_state.items():
             if internal_name.startswith("external_") and enabled:
@@ -224,17 +222,13 @@ def get_roblox_folder():
     return None
 
 
-# Add these new functions to handle external mod creation and management
-
 def generate_unique_internal_name(display_name):
-    """Generate a unique internal name for a mod based on display name."""
     base_name = display_name.lower().replace(' ', '_')
     unique_id = str(uuid.uuid4())[:8]
     return f"external_{base_name}_{unique_id}"
 
 
 def save_external_mods(mod_data):
-    """Save external mods data to the JSON file."""
     try:
         with open(external_mods_file, "w") as f:
             json.dump(mod_data, f, indent=4)
@@ -245,27 +239,23 @@ def save_external_mods(mod_data):
 
 
 def create_external_mod():
-    """Create a new external mod through a dialog interface."""
     dialog = QDialog()
     dialog.setWindowTitle("Create External Mod")
     dialog.setMinimumSize(500, 600)
 
     layout = QVBoxLayout()
 
-    # Mod name
     name_label = QLabel("Mod Name:")
     name_input = QLineEdit()
     layout.addWidget(name_label)
     layout.addWidget(name_input)
 
-    # Mod type
     type_label = QLabel("Mod Type:")
     type_combo = QComboBox()
     type_combo.addItems(["mod", "texturepack"])
     layout.addWidget(type_label)
     layout.addWidget(type_combo)
 
-    # Icon selection
     icon_label = QLabel("Mod Icon:")
     icon_preview = QLabel()
     icon_preview.setFixedSize(100, 100)
@@ -299,7 +289,6 @@ def create_external_mod():
     icon_layout.addWidget(icon_button)
     layout.addLayout(icon_layout)
 
-    # File replacements
     files_label = QLabel("File Replacements:")
     files_table = QTableWidget()
     files_table.setColumnCount(2)
@@ -341,7 +330,6 @@ def create_external_mod():
     layout.addWidget(files_table)
     layout.addWidget(add_file_button)
 
-    # Fast flags
     flags_label = QLabel("Fast Flags:")
     flags_table = QTableWidget()
     flags_table.setColumnCount(2)
@@ -361,14 +349,12 @@ def create_external_mod():
     layout.addWidget(flags_table)
     layout.addWidget(add_flag_button)
 
-    # Conflicting mods
     conflicts_label = QLabel("Conflicting Mods:")
     conflicts_input = QLineEdit()
     conflicts_input.setPlaceholderText("Comma-separated mod names")
     layout.addWidget(conflicts_label)
     layout.addWidget(conflicts_input)
 
-    # Buttons
     button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     button_box.accepted.connect(dialog.accept)
     button_box.rejected.connect(dialog.reject)
@@ -390,7 +376,6 @@ def create_external_mod():
             QMessageBox.warning(dialog, "Error", "Please select an icon for the mod!")
             return
 
-        # Process file replacements
         file_replacements = []
         for row in range(files_table.rowCount()):
             source = files_table.item(row, 0).text() if files_table.item(row, 0) else ""
@@ -401,7 +386,6 @@ def create_external_mod():
                     "destination": dest
                 })
 
-        # Process fast flags
         fast_flags = {}
         for row in range(flags_table.rowCount()):
             flag_name = flags_table.item(row, 0).text() if flags_table.item(row, 0) else ""
@@ -409,25 +393,20 @@ def create_external_mod():
             if flag_name and flag_value:
                 fast_flags[flag_name] = flag_value
 
-        # Process conflicts
         conflicts = [c.strip() for c in conflicts_input.text().split(",") if c.strip()]
 
-        # Create mod directory structure
         internal_name = generate_unique_internal_name(mod_name)
         mod_dir = os.path.join(external_mods_dir, internal_name)
         os.makedirs(mod_dir, exist_ok=True)
 
-        # Copy icon
         icon_dest = os.path.join(mod_dir, "icon.png")
         shutil.copy(icon_path, icon_dest)
 
-        # Copy source files
         for file in file_replacements:
             src_path = file["source"]
             dest_rel_path = os.path.join(mod_dir, os.path.basename(src_path))
             shutil.copy(src_path, dest_rel_path)
 
-        # Create mod config
         mod_config = {
             "name": mod_name,
             "type": mod_type,
@@ -450,13 +429,11 @@ def create_external_mod():
         }
 
         if save_external_mods(external_mods):
-            # Add to MOD_NAME_MAPPING and CONFLICTING_MODS
             MOD_NAME_MAPPING[mod_name] = internal_name
             INTERNAL_TO_DISPLAY[internal_name] = mod_name
             if conflicts:
                 CONFLICTING_MODS[mod_name] = conflicts
 
-            # Create apply function
             def mod_apply_function(enabled):
                 apply_external_mod(selected_modpack, internal_name, mod_config, enabled)
 
@@ -475,13 +452,11 @@ def create_external_mod():
 
 
 def update_all_external_mods():
-    """Update all external mods by reloading their configurations."""
     external_mods = load_external_mods()
     if not external_mods:
         QMessageBox.information(None, "Info", "No external mods found to update.")
         return
 
-    # Create progress dialog
     progress = QProgressDialog("Updating external mods...", "Cancel", 0, len(external_mods))
     progress.setWindowTitle("Updating Mods")
     progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -521,7 +496,6 @@ def update_all_external_mods():
 
 
 def update_single_external_mod(internal_name):
-    """Update a single external mod by reloading its configuration."""
     external_mods = load_external_mods()
     mod_info = external_mods.get(internal_name)
 
@@ -561,14 +535,12 @@ def update_single_external_mod(internal_name):
 
 
 def show_external_mod_manager():
-    """Show a dialog to manage external mods."""
     dialog = QDialog()
     dialog.setWindowTitle("Manage External Mods")
     dialog.setMinimumSize(600, 400)
 
     layout = QVBoxLayout()
 
-    # Toolbar with new Update button
     toolbar = QToolBar()
     import_action = QAction("Import Mod", dialog)
     create_action = QAction("Create Mod", dialog)
@@ -586,7 +558,6 @@ def show_external_mod_manager():
     toolbar.addAction(remove_action)
     layout.addWidget(toolbar)
 
-    # Mods table
     mods_table = QTableWidget()
     mods_table.setColumnCount(4)
     mods_table.setHorizontalHeaderLabels(["Name", "Type", "Status", "Actions"])
@@ -594,7 +565,6 @@ def show_external_mod_manager():
     mods_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     mods_table.verticalHeader().setDefaultSectionSize(60)  # Increase row height
 
-    # Load mods data
     external_mods = load_external_mods()
     mods_table.setRowCount(len(external_mods))
 
@@ -615,7 +585,6 @@ def show_external_mod_manager():
             status_item.setText("N/A")
         mods_table.setItem(row, 2, status_item)
 
-        # Action buttons
         action_widget = QWidget()
         action_layout = QHBoxLayout()
         action_layout.setContentsMargins(5, 5, 5, 5)
@@ -640,7 +609,7 @@ def show_external_mod_manager():
 
         if selected_modpack:
             toggle_button = QPushButton("Toggle")
-            toggle_button.setFixedSize(80, 30)  # Set fixed size for consistency
+            toggle_button.setFixedSize(80, 30)
             toggle_button.setStyleSheet("""
                 QPushButton {
                     background-color: #3a3a3a;
@@ -656,7 +625,7 @@ def show_external_mod_manager():
             action_layout.addWidget(toggle_button)
 
         edit_button = QPushButton("Edit")
-        edit_button.setFixedSize(80, 30)  # Set fixed size for consistency
+        edit_button.setFixedSize(80, 30)
         edit_button.setStyleSheet("""
             QPushButton {
                 background-color: #3a3a3a;
@@ -680,7 +649,6 @@ def show_external_mod_manager():
 
 
 def toggle_external_mod(internal_name):
-    """Toggle an external mod's state for the current modpack."""
     if not selected_modpack:
         QMessageBox.warning(None, "Warning", "Please select a modpack first.")
         return
@@ -717,7 +685,6 @@ def toggle_external_mod(internal_name):
 
 
 def edit_external_mod(internal_name):
-    """Edit an existing external mod."""
     external_mods = load_external_mods()
     mod_info = external_mods.get(internal_name)
     if not mod_info:
@@ -733,26 +700,22 @@ def edit_external_mod(internal_name):
 
     layout = QVBoxLayout()
 
-    # Basic info
     name_label = QLabel("Mod Name:")
     name_input = QLineEdit(mod_info["name"])
     layout.addWidget(name_label)
     layout.addWidget(name_input)
 
-    # Mod type (readonly)
     type_label = QLabel("Mod Type:")
     type_display = QLabel(mod_info["type"])
     layout.addWidget(type_label)
     layout.addWidget(type_display)
-
-    # Fast flags editor
+    
     flags_label = QLabel("Fast Flags:")
     flags_editor = QTextEdit()
     flags_editor.setPlainText(json.dumps(mod_config.get("fast_flags", {}), indent=4))
     layout.addWidget(flags_label)
     layout.addWidget(flags_editor)
 
-    # File replacements (readonly display)
     files_label = QLabel("File Replacements:")
     files_display = QTextEdit()
     files_display.setPlainText(json.dumps(mod_config.get("replace_files", []), indent=4))
@@ -760,13 +723,11 @@ def edit_external_mod(internal_name):
     layout.addWidget(files_label)
     layout.addWidget(files_display)
 
-    # Conflicting mods
     conflicts_label = QLabel("Conflicting Mods:")
     conflicts_input = QLineEdit(", ".join(mod_config.get("conflicts", [])))
     layout.addWidget(conflicts_label)
     layout.addWidget(conflicts_input)
 
-    # Buttons
     button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     button_box.accepted.connect(dialog.accept)
     button_box.rejected.connect(dialog.reject)
@@ -775,7 +736,7 @@ def edit_external_mod(internal_name):
     dialog.setLayout(layout)
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
-        # Update mod info
+
         new_name = name_input.text().strip()
         if not new_name:
             QMessageBox.warning(dialog, "Error", "Mod name cannot be empty!")
@@ -785,7 +746,6 @@ def edit_external_mod(internal_name):
             new_flags = json.loads(flags_editor.toPlainText())
             new_conflicts = [c.strip() for c in conflicts_input.text().split(",") if c.strip()]
 
-            # Update mod config
             mod_config["name"] = new_name
             mod_config["fast_flags"] = new_flags
             mod_config["conflicts"] = new_conflicts
@@ -793,11 +753,9 @@ def edit_external_mod(internal_name):
             with open(mod_info["config_path"], "w") as f:
                 json.dump(mod_config, f, indent=4)
 
-            # Update external mods registry
             external_mods[internal_name]["name"] = new_name
             save_external_mods(external_mods)
 
-            # Update global mappings if name changed
             if new_name != mod_info["name"]:
                 if mod_info["name"] in MOD_NAME_MAPPING:
                     del MOD_NAME_MAPPING[mod_info["name"]]
@@ -818,7 +776,7 @@ def edit_external_mod(internal_name):
 
 
 def remove_selected_mods(table):
-    """Remove selected mods from the external mods list."""
+
     selected_rows = set(index.row() for index in table.selectionModel().selectedRows())
     if not selected_rows:
         QMessageBox.warning(None, "Warning", "Please select at least one mod to remove.")
@@ -840,10 +798,8 @@ def remove_selected_mods(table):
 
     if reply == QMessageBox.StandardButton.Yes:
         for internal_name, mod_name in mods_to_remove:
-            # Remove from external mods
             del external_mods[internal_name]
 
-            # Remove from global mappings if present
             if mod_name in MOD_NAME_MAPPING:
                 del MOD_NAME_MAPPING[mod_name]
 
@@ -853,7 +809,6 @@ def remove_selected_mods(table):
             if mod_name in CONFLICTING_MODS:
                 del CONFLICTING_MODS[mod_name]
 
-            # Remove mod directory
             mod_dir = os.path.join(external_mods_dir, internal_name)
             if os.path.exists(mod_dir):
                 shutil.rmtree(mod_dir)
@@ -1142,7 +1097,6 @@ def import_external_mod():
     )
     thread.start()
 
-    # Use QTimer instead of app.after since we're not in a QApplication context
     timer = QTimer()
     timer.timeout.connect(lambda: check_external_mod_queue(loading_window, result_queue))
     timer.start(100)
@@ -2145,7 +2099,6 @@ def anime_chan_sky(enabled):
 
 
 def apply_bloxstrap_theme(enabled):
-    """Applies or removes the Bloxstrap theme to the selected modpack."""
     modpack = selected_modpack
     if not modpack:
         print("Error: Please select a modpack first.")
@@ -2447,7 +2400,6 @@ class ModpackCard(QFrame):
         super().__init__(parent)
         self.setFixedSize(160, 180)
 
-        # Default style will be set by theme
         self.setStyleSheet("""
             ModpackCard {
                 border: 1px solid;
@@ -2463,14 +2415,12 @@ class ModpackCard(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # Icon
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(140, 140)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.set_icon(icon_path)
         layout.addWidget(self.icon_label)
 
-        # Modpack name
         self.name_label = QLabel(modpack_name)
         self.name_label.setStyleSheet("font-size: 14px;")
         self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2478,19 +2428,17 @@ class ModpackCard(QFrame):
 
         self.setLayout(layout)
 
-        # Connect click event
         self.mousePressEvent = lambda e: click_callback(modpack_name)
 
     def set_icon(self, icon_path):
         try:
             img = Image.open(icon_path)
             img = img.resize((140, 140))
-            img.save("temp_modpack_icon.png")  # Save temporarily
+            img.save("temp_modpack_icon.png")
             pixmap = QPixmap("temp_modpack_icon.png")
             os.remove("temp_modpack_icon.png")
             self.icon_label.setPixmap(pixmap)
         except:
-            # Fallback icon
             pixmap = QPixmap(140, 140)
             pixmap.fill(QColor(100, 100, 100))
             self.icon_label.setPixmap(pixmap)
@@ -2506,19 +2454,15 @@ class MainWindow(QMainWindow):
         default_font = QFont("Roboto", 10)
         QApplication.setFont(default_font)
 
-        # Load fonts
         QFontDatabase.addApplicationFont("assets/fonts/Roboto-Regular.ttf")
         QFontDatabase.addApplicationFont("assets/fonts/Roboto-Bold.ttf")
 
-        # Central widget
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
 
-        # Main layout
         self.main_layout = QHBoxLayout()
         self.central_widget.setLayout(self.main_layout)
 
-        # Sidebar
         self.sidebar = QFrame()
         self.sidebar.setFixedWidth(200)
         self.sidebar.setStyleSheet("background-color: #1a1a1a;")
@@ -2529,9 +2473,8 @@ class MainWindow(QMainWindow):
         logo_container = QWidget()
         logo_layout = QHBoxLayout()
         logo_layout.setContentsMargins(0, 0, 0, 0)
-        logo_layout.setSpacing(10)  # This creates the 10px gap between text and logo
+        logo_layout.setSpacing(10)
 
-        # Create a container for the text+logo pair to center them
         center_container = QWidget()
         center_layout = QHBoxLayout()
         center_layout.setContentsMargins(0, 0, 0, 0)
@@ -2540,16 +2483,13 @@ class MainWindow(QMainWindow):
         logo_text = QLabel("RoForge")
         logo_text.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
 
-        # Logo image
         self.logo_img = QLabel()
         self.logo_img.setFixedSize(24, 24)
         self.set_logo_image("assets/images/play.png")
 
-        # Add text and logo to the center layout
         center_layout.addWidget(logo_text)
         center_layout.addWidget(self.logo_img)
 
-        # Add stretch to both sides to center the pair
         logo_layout.addStretch()
         logo_layout.addLayout(center_layout)
         logo_layout.addStretch()
@@ -2557,7 +2497,6 @@ class MainWindow(QMainWindow):
         logo_container.setLayout(logo_layout)
         self.sidebar_layout.addWidget(logo_container)
 
-        # Navigation buttons
         self.btn_modpacks = QPushButton("Modpacks")
         self.btn_mods = QPushButton("Mods")
         self.btn_settings = QPushButton("Settings")
@@ -2586,26 +2525,21 @@ class MainWindow(QMainWindow):
         self.sidebar.setLayout(self.sidebar_layout)
         self.main_layout.addWidget(self.sidebar)
 
-        # Main content area
         self.content_area = QFrame()
         self.content_area.setStyleSheet("background-color: #222222;")
         self.content_layout = QVBoxLayout()
         self.content_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Stacked widget for pages
         self.stacked_widget = QStackedWidget()
 
-        # Modpacks page
         self.modpacks_page = QWidget()
         self.setup_modpacks_page()
         self.stacked_widget.addWidget(self.modpacks_page)
 
-        # Mods page
         self.mods_page = QWidget()
         self.setup_mods_page()
         self.stacked_widget.addWidget(self.mods_page)
 
-        # Settings page
         self.settings_page = QWidget()
         self.setup_settings_page()
         self.stacked_widget.addWidget(self.settings_page)
@@ -2614,12 +2548,10 @@ class MainWindow(QMainWindow):
         self.content_area.setLayout(self.content_layout)
         self.main_layout.addWidget(self.content_area)
 
-        # Connect signals
         self.btn_modpacks.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
         self.btn_mods.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
         self.btn_settings.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
 
-        # Initialize modpacks
         self.modpacks_dir = os.path.join(os.path.dirname(__file__), "ModPacks")
         if not os.path.exists(self.modpacks_dir):
             os.makedirs(self.modpacks_dir)
@@ -2629,14 +2561,13 @@ class MainWindow(QMainWindow):
         selected_modpack = self.selected_modpack
         self.update_modpacks_display()
 
-        # Initialize mod states
         self.mod_states = {}
 
     def set_logo_image(self, icon_path):
         try:
             img = Image.open(icon_path)
-            img = img.resize((24, 24))  # Match the size set above
-            img.save("temp_logo.png")  # Save temporarily
+            img = img.resize((24, 24))
+            img.save("temp_logo.png")
             pixmap = QPixmap("temp_logo.png")
             os.remove("temp_logo.png")
             self.logo_img.setPixmap(pixmap)
@@ -2656,7 +2587,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Top bar
         top_bar = QFrame()
         top_bar.setFixedHeight(60)
         top_bar.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
@@ -2690,7 +2620,6 @@ class MainWindow(QMainWindow):
         top_bar.setLayout(top_bar_layout)
         layout.addWidget(top_bar)
 
-        # Modpacks grid
         self.modpacks_scroll = QScrollArea()
         self.modpacks_scroll.setWidgetResizable(True)
         self.modpacks_scroll.setStyleSheet("border: none;")
@@ -2704,7 +2633,6 @@ class MainWindow(QMainWindow):
         self.modpacks_scroll.setWidget(self.modpacks_container)
         layout.addWidget(self.modpacks_scroll)
 
-        # Connect signals
         self.btn_create_modpack.clicked.connect(self.show_create_modpack_dialog)
         self.btn_import_modpack.clicked.connect(self.import_modpack)
 
@@ -2714,19 +2642,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Top bar with modpack info
         self.top_bar_mods = QFrame()
         self.top_bar_mods.setFixedHeight(100)
         self.top_bar_mods.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
         self.top_bar_mods_layout = QHBoxLayout()
         self.top_bar_mods_layout.setContentsMargins(20, 0, 20, 0)
 
-        # Modpack icon
         self.modpack_icon = QLabel()
         self.modpack_icon.setFixedSize(80, 80)
         self.modpack_icon.setStyleSheet("background-color: #333333; border-radius: 5px;")
 
-        # Modpack info
         self.modpack_info = QFrame()
         self.modpack_info_layout = QVBoxLayout()
         self.modpack_info_layout.setContentsMargins(10, 0, 0, 0)
@@ -2765,7 +2690,6 @@ class MainWindow(QMainWindow):
         self.modpack_info_layout.addWidget(self.modpack_actions)
         self.modpack_info.setLayout(self.modpack_info_layout)
 
-        # Spacer
         spacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         self.top_bar_mods_layout.addWidget(self.modpack_icon)
@@ -2774,7 +2698,6 @@ class MainWindow(QMainWindow):
         self.top_bar_mods.setLayout(self.top_bar_mods_layout)
         layout.addWidget(self.top_bar_mods)
 
-        # Mod filter bar
         filter_bar = QFrame()
         filter_bar.setFixedHeight(60)
         filter_bar.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
@@ -2836,7 +2759,6 @@ class MainWindow(QMainWindow):
         filter_bar.setLayout(filter_bar_layout)
         layout.addWidget(filter_bar)
 
-        # Mods list
         self.mods_scroll = QScrollArea()
         self.mods_scroll.setWidgetResizable(True)
         self.mods_scroll.setStyleSheet("border: none;")
@@ -2850,7 +2772,6 @@ class MainWindow(QMainWindow):
         self.mods_scroll.setWidget(self.mods_container)
         layout.addWidget(self.mods_scroll)
 
-        # Connect signals
         self.btn_launch.clicked.connect(self.launch_modpack)
         self.btn_update.clicked.connect(self.update_modpack)
         self.btn_export.clicked.connect(self.export_modpack)
@@ -2866,7 +2787,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Settings content
         settings_content = QFrame()
         settings_content.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
         settings_layout = QVBoxLayout()
@@ -2876,7 +2796,6 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
         settings_layout.addWidget(title)
 
-        # Multi-instance setting
         multi_instance_frame = QFrame()
         multi_instance_frame.setStyleSheet("background-color: #333333; border-radius: 5px;")
         multi_instance_layout = QHBoxLayout()
@@ -2915,23 +2834,19 @@ class MainWindow(QMainWindow):
 
         self.settings_page.setLayout(layout)
 
-        # Connect signals
         self.multi_instance_toggle.stateChanged.connect(self.toggle_multi_roblox)
 
     def update_modpacks_display(self):
-        # Clear existing modpacks
         for i in reversed(range(self.modpacks_grid.count())):
             widget = self.modpacks_grid.itemAt(i).widget()
             if widget:
                 widget.setParent(None)
 
-        # Calculate number of columns based on window width
         window_width = self.width()
-        card_width = 180  # Width of each modpack card
-        spacing = 20  # Spacing between cards
+        card_width = 180
+        spacing = 20
         max_cols = max(2, window_width // (card_width + spacing))
 
-        # Add modpacks in a grid
         row, col = 0, 0
 
         for modpack in self.modpacks:
@@ -2942,16 +2857,13 @@ class MainWindow(QMainWindow):
             card = ModpackCard(modpack, icon_path, self.select_modpack)
             card.setFixedSize(160, 180)  # Set fixed size for consistency
 
-            # Add card to grid
             self.modpacks_grid.addWidget(card, row, col)
 
-            # Update grid position
             col += 1
             if col >= max_cols:
                 col = 0
                 row += 1
 
-        # Add stretch to fill remaining space
         self.modpacks_grid.setRowStretch(row + 1, 1)
         for c in range(max_cols):
             self.modpacks_grid.setColumnStretch(c, 1)
@@ -2963,7 +2875,6 @@ class MainWindow(QMainWindow):
 
         self.modpack_name.setText(modpack_name)
 
-        # Load modpack icon
         icon_path = os.path.join(self.modpacks_dir, modpack_name, "image.png")
         if os.path.exists(icon_path):
             img = Image.open(icon_path)
@@ -2975,14 +2886,11 @@ class MainWindow(QMainWindow):
         else:
             self.modpack_icon.setPixmap(QPixmap(80, 80))
 
-        # Switch to mods page
         self.stacked_widget.setCurrentIndex(1)
 
-        # Load mod states
         self.load_mod_states(modpack_name)
 
     def load_mod_states(self, modpack_name):
-        # Clear existing mods
         for i in reversed(range(self.mods_layout.count())):
             self.mods_layout.itemAt(i).widget().setParent(None)
 
@@ -2993,7 +2901,6 @@ class MainWindow(QMainWindow):
         with open(mod_state_path, "r") as f:
             mod_state = json.load(f)
 
-        # Add internal mods
         internal_mods = [
             ("R63 avatar", replace_character_meshes, os.path.join("assets", "images", "girl.jpg")),
             ("Faster inputs", faster_inputs, os.path.join("assets", "images", "keyboard.png")),
@@ -3027,7 +2934,6 @@ class MainWindow(QMainWindow):
             mod_switch.toggle.setChecked(enabled)
             self.mods_layout.addWidget(mod_switch)
 
-        # Add external mods
         external_mods = load_external_mods()
         for internal_name, mod_info in external_mods.items():
             if not validate_external_mod_entry(internal_name, mod_info):
@@ -3048,7 +2954,6 @@ class MainWindow(QMainWindow):
             mod_switch.toggle.setChecked(enabled)
             self.mods_layout.addWidget(mod_switch)
 
-        # Apply initial filter
         self.filter_mods(current_filter)
 
     def toggle_mod(self, mod_name, mod_function, state):
@@ -3064,19 +2969,16 @@ class MainWindow(QMainWindow):
 
         internal_name = MOD_NAME_MAPPING.get(mod_name, mod_name.lower().replace(' ', '_'))
 
-        # Only apply if state has changed
         if internal_name in mod_state and mod_state[internal_name] == state:
             return
 
         try:
             mod_function(state)
 
-            # Update mod state
             mod_state[internal_name] = state
             with open(mod_state_path, "w") as f:
                 json.dump(mod_state, f, indent=4)
 
-            # Handle conflicts
             if state and mod_name in CONFLICTING_MODS:
                 self.handle_mod_conflicts(mod_name)
 
@@ -3101,12 +3003,10 @@ class MainWindow(QMainWindow):
         try:
             apply_external_mod(self.selected_modpack, internal_name, mod_config, state)
 
-            # Update mod state
             mod_state[internal_name] = state
             with open(mod_state_path, "w") as f:
                 json.dump(mod_state, f, indent=4)
 
-            # Handle conflicts
             if state and mod_config.get("name") in CONFLICTING_MODS:
                 self.handle_mod_conflicts(mod_config.get("name"))
 
@@ -3176,7 +3076,6 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout()
 
-        # Name input
         name_label = QLabel("Modpack Name:")
         name_label.setStyleSheet("color: white;")
         self.modpack_name_input = QLineEdit()
@@ -3190,7 +3089,6 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # Image selection
         image_label = QLabel("Modpack Image:")
         image_label.setStyleSheet("color: white;")
 
@@ -3213,7 +3111,6 @@ class MainWindow(QMainWindow):
         """)
         btn_select_image.clicked.connect(self.select_modpack_image)
 
-        # Buttons
         btn_frame = QFrame()
         btn_layout = QHBoxLayout()
 
@@ -3249,7 +3146,6 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_cancel)
         btn_frame.setLayout(btn_layout)
 
-        # Add widgets to layout
         layout.addWidget(name_label)
         layout.addWidget(self.modpack_name_input)
         layout.addWidget(image_label)
@@ -3286,7 +3182,6 @@ class MainWindow(QMainWindow):
         loading_dialog = LoadingDialog(self, "Creating modpack...")
         loading_dialog.show()
 
-        # Create modpack in a separate thread
         self.create_thread = CreateModpackThread(name, self.image_path)
         self.create_thread.finished.connect(lambda: self.on_modpack_created(name, loading_dialog, dialog))
         self.create_thread.start()
@@ -3349,7 +3244,6 @@ class MainWindow(QMainWindow):
             loading_dialog = LoadingDialog(self, f"Importing modpack '{new_modpack_name}'...")
             loading_dialog.show()
 
-            # Import modpack in a separate thread
             self.import_thread = ImportModpackThread(new_modpack_name, imported_mod_state)
             self.import_thread.finished.connect(lambda: self.on_modpack_imported(new_modpack_name, loading_dialog))
             self.import_thread.start()
@@ -3386,7 +3280,6 @@ class MainWindow(QMainWindow):
         loading_dialog = LoadingDialog(self, "Updating modpack...")
         loading_dialog.show()
 
-        # Update modpack in a separate thread
         self.update_thread = UpdateModpackThread(self.selected_modpack)
         self.update_thread.finished.connect(lambda: self.on_modpack_updated(loading_dialog))
         self.update_thread.start()
@@ -3455,7 +3348,6 @@ class MainWindow(QMainWindow):
             selected_modpack = self.selected_modpack
             self.update_modpacks_display()
 
-            # Switch back to modpacks page
             self.stacked_widget.setCurrentIndex(0)
 
             QMessageBox.information(self, "Success", "Modpack deleted successfully!")
@@ -3481,25 +3373,20 @@ class MainWindow(QMainWindow):
 
             layout = QVBoxLayout()
 
-            # Create toolbar for presets
             toolbar = QToolBar()
 
-            # Save preset button
             save_preset_action = QAction("Save Preset", dialog)
             save_preset_action.setIcon(QIcon.fromTheme("document-save"))
             save_preset_action.triggered.connect(lambda: self.save_fflag_preset(editor.toPlainText()))
             toolbar.addAction(save_preset_action)
 
-            # Load preset button
             load_preset_action = QAction("Load Preset", dialog)
             load_preset_action.setIcon(QIcon.fromTheme("document-open"))
             load_preset_action.triggered.connect(lambda: self.load_fflag_preset(editor))
             toolbar.addAction(load_preset_action)
 
-            # Add separator
             toolbar.addSeparator()
 
-            # Add clear button
             clear_action = QAction("Clear Flags", dialog)
             clear_action.setIcon(QIcon.fromTheme("edit-clear"))
             clear_action.triggered.connect(lambda: editor.setPlainText("{}"))
@@ -3576,12 +3463,10 @@ class MainWindow(QMainWindow):
             if not ok or not name.strip():
                 return
 
-            # Create presets directory if it doesn't exist
             presets_dir = os.path.join(os.path.dirname(__file__), "Presets")
             if not os.path.exists(presets_dir):
                 os.makedirs(presets_dir)
 
-            # Save preset
             preset_path = os.path.join(presets_dir, f"{name}.json")
             with open(preset_path, 'w') as f:
                 f.write(fflags_text)
@@ -3594,19 +3479,16 @@ class MainWindow(QMainWindow):
 
     def load_fflag_preset(self, editor):
         try:
-            # Get presets directory
             presets_dir = os.path.join(os.path.dirname(__file__), "Presets")
             if not os.path.exists(presets_dir):
                 QMessageBox.information(self, "Info", "No presets found.")
                 return
 
-            # Get list of presets
             presets = [f[:-5] for f in os.listdir(presets_dir) if f.endswith('.json')]
             if not presets:
                 QMessageBox.information(self, "Info", "No presets found.")
                 return
 
-            # Show selection dialog
             preset, ok = QInputDialog.getItem(
                 self,
                 "Load Preset",
@@ -3618,15 +3500,12 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
 
-            # Load selected preset
             preset_path = os.path.join(presets_dir, f"{preset}.json")
             with open(preset_path, 'r') as f:
                 preset_data = f.read()
 
-            # Validate JSON
             json.loads(preset_data)
 
-            # Update editor
             editor.setPlainText(preset_data)
 
         except Exception as e:
@@ -3713,11 +3592,9 @@ class CreateModpackThread(QThread):
                     with open(settings_file, "w") as f:
                         json.dump({}, f, indent=4)
 
-                # Initialize mod state file with all mods set to False
                 mod_state_path = os.path.join(modpack_folder, "mod_state.json")
                 mod_state = {internal_name: False for internal_name in MOD_NAME_MAPPING.values()}
 
-                # Add external mods if they exist
                 external_mods = load_external_mods()
                 for internal_name in external_mods.keys():
                     mod_state[internal_name] = False
@@ -3773,12 +3650,10 @@ class ImportModpackThread(QThread):
                     with open(settings_file, "w") as f:
                         json.dump({}, f, indent=4)
 
-                # Initialize any missing mod states
                 default_mod_state = {internal_name: False for internal_name in MOD_NAME_MAPPING.values()}
                 for mod in self.mod_state:
                     default_mod_state[mod] = self.mod_state[mod]
 
-                # Add external mods if they exist
                 external_mods = load_external_mods()
                 for internal_name in external_mods.keys():
                     if internal_name not in default_mod_state:
@@ -3848,7 +3723,6 @@ class UpdateModpackThread(QThread):
 if __name__ == "__main__":
     app = QApplication([])
 
-    # Set dark theme
     app.setStyle("Fusion")
     dark_palette = app.palette()
     dark_palette.setColor(dark_palette.ColorRole.Window, QColor(53, 53, 53))
