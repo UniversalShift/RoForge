@@ -4,25 +4,25 @@ import shutil
 import threading
 import subprocess
 import time
-import tkinter as tk
-import queue
 import uuid
-
 import zipfile
-import customtkinter as Ctk
-from PIL import Image, ImageTk
-from tkinter import filedialog, messagebox, Text, Scrollbar
-import pywinstyles
 import math
 import winreg
 import ctypes
 import logging
-from customtkinter import CTkInputDialog
+import queue
+from functools import partial
+from tkinter import filedialog
 
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
+from PIL import Image
 
-'''Constants...'''
-
+# Constants and other existing code remains the same
 current_filter = "mods"
+mod_states = {}
+selected_modpack = None
 
 MOD_NAME_MAPPING = {
     "Replace Font": "replace_font",
@@ -65,6 +65,14 @@ CONFLICTING_MODS = {
     "Anime chan sky": ["Beautiful sky"]
 }
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+modpacks_dir = os.path.join(script_dir, "ModPacks")
+external_mods_dir = os.path.join(script_dir, "ExternalMods")
+images_folder = os.path.join(script_dir, "Assets", "images")
+sounds_folder = os.path.join(script_dir, "Assets", "sounds")
+meshes_folder = os.path.join(script_dir, "Assets", "meshes")
+
+
 external_mods_dir = os.path.join(os.path.dirname(__file__), "ExternalMods")
 if not os.path.exists(external_mods_dir):
     os.makedirs(external_mods_dir)
@@ -74,143 +82,28 @@ if not os.path.exists(external_mods_file):
     with open(external_mods_file, "w") as f:
         json.dump({}, f, indent=4)
 
-
-
-'''Functions'''
-
-
-def update_modpack():
-    modpack = selected_modpack.get()
-    if not modpack:
-        messagebox.showwarning("Update Error", "Please select a modpack first.")
-        return
-
+def update_mod_state(modpack_path, key, value):
+    mod_state_path = os.path.join(modpack_path, "mod_state.json")
+    mod_state = {}
     try:
-        loading_window = show_loading_screen("Checking for updates...")
-        result_queue = queue.Queue()
-        thread = threading.Thread(
-            target=_update_modpack_worker,
-            args=(modpack, result_queue),
-            daemon=True
-        )
-        thread.start()
-        app.after(100, check_update_queue, loading_window, result_queue)
+        if os.path.exists(mod_state_path):
+            with open(mod_state_path, "r") as f:
+                mod_state = json.load(f)
     except Exception as e:
-        messagebox.showerror("Update Error", f"Failed to start update process: {str(e)}")
+        print(f"Warning: Could not read mod state file {mod_state_path}: {e}")
 
+    mod_state[key] = value
 
-def _update_modpack_worker(modpack_name, result_queue):
     try:
-        result_queue.put(("status", "Checking Roblox version..."))
-        current_roblox_path = get_roblox_folder()
-        if not current_roblox_path:
-            result_queue.put(("error", "Roblox installation not found."))
-            return
-
-        current_version = os.path.basename(current_roblox_path)
-        modpack_dir = os.path.join(modpacks_dir, modpack_name)
-        roblox_copy_dir = os.path.join(modpack_dir, "RobloxCopy")
-
-        existing_versions = os.listdir(roblox_copy_dir)
-        if not existing_versions:
-            result_queue.put(("error", "No existing Roblox version found in modpack."))
-            return
-
-        existing_version = existing_versions[0]
-        if existing_version == current_version:
-            result_queue.put(("success", "already_updated"))
-            return
-
-        result_queue.put(("status", f"Updating from {existing_version} to {current_version}..."))
-
-        result_queue.put(("status", "Backing up current mod states..."))
-        mod_state_path = os.path.join(modpack_dir, "mod_state.json")
-        with open(mod_state_path, "r") as f:
-            mod_states = json.load(f)
-
-        result_queue.put(("status", "Removing old Roblox version..."))
-        shutil.rmtree(roblox_copy_dir)
-
-        result_queue.put(("status", "Copying new Roblox version..."))
-        new_version_path = os.path.join(roblox_copy_dir, current_version)
-        shutil.copytree(current_roblox_path, new_version_path)
-
-        result_queue.put(("status", "Recreating settings..."))
-        settings_dir = os.path.join(new_version_path, "ClientSettings")
-        os.makedirs(settings_dir, exist_ok=True)
-        settings_file = os.path.join(settings_dir, "ClientAppSettings.json")
-        if not os.path.exists(settings_file):
-            with open(settings_file, "w") as f:
-                json.dump({}, f, indent=4)
-
-        result_queue.put(("status", "Reapplying mods..."))
-        reapply_enabled_mods(modpack_name)
-
-        result_queue.put(("success", "updated"))
-
+        with open(mod_state_path, "w") as f:
+            json.dump(mod_state, f, indent=4)
+        print(f"Updated mod state '{key}' to '{value}' in {mod_state_path}")
     except Exception as e:
-        result_queue.put(("error", f"Update failed: {str(e)}"))
-
-
-def check_update_queue(loading_window, result_queue):
-    try:
-        message = result_queue.get_nowait()
-        msg_type, msg_data = message
-
-        if msg_type == "status":
-            loading_window.label.configure(text=msg_data)
-            app.after(100, check_update_queue, loading_window, result_queue)
-        elif msg_type == "error":
-            loading_window.destroy()
-            messagebox.showerror("Update Error", msg_data)
-        elif msg_type == "success":
-            loading_window.destroy()
-            if msg_data == "already_updated":
-                messagebox.showinfo("Info", "Modpack is already up-to-date.")
-            else:
-                messagebox.showinfo("Success", "Modpack updated successfully!")
-                selected_modpack.set("")
-                selected_modpack.set(modpack)
-                show_tab("Tab2")
-    except queue.Empty:
-        app.after(100, check_update_queue, loading_window, result_queue)
+        print(f"Error writing mod state file {mod_state_path}: {e}")
 
 def load_external_mods():
     with open(external_mods_file, "r") as f:
         return json.load(f)
-
-
-def save_external_mods(external_mods):
-    with open(external_mods_file, "w") as f:
-        json.dump(external_mods, f, indent=4)
-
-
-def generate_unique_internal_name(mod_name):
-    base_name = mod_name.replace(' ', '_').lower()
-    unique_id = str(uuid.uuid4())[:8]
-    return f"external_{base_name}_{unique_id}"
-
-
-def import_external_mod():
-    import_path = filedialog.askopenfilename(
-        filetypes=[("RoForge Mod", "*.zip"), ("All Files", "*.*")],
-        title="Import External Mod or Texture Pack"
-    )
-    if not import_path:
-        return
-
-    loading_window = show_loading_screen("Importing external mod...")
-    result_queue = queue.Queue()
-
-    thread = threading.Thread(
-        target=_import_external_mod_worker,
-        args=(import_path, result_queue),
-        daemon=True
-    )
-    thread.start()
-
-    app.after(100, check_external_mod_queue, loading_window, result_queue)
-
 
 def validate_external_mod_entry(internal_name, mod_info):
     try:
@@ -232,149 +125,6 @@ def validate_external_mod_entry(internal_name, mod_info):
         logging.error(f"Error validating mod entry {internal_name}: {str(e)}")
         return False
 
-
-def _import_external_mod_worker(zip_path, result_queue):
-    try:
-        result_queue.put(("status", "Extracting mod archive..."))
-        temp_dir = os.path.join(os.path.dirname(__file__), "TempModExtract")
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir)
-
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_dir)
-
-        config_path = os.path.join(temp_dir, "mod_config.rfmod")
-        if not os.path.exists(config_path):
-            result_queue.put(
-                ("error", "mod_config.rfmod not found in archive."))
-            shutil.rmtree(temp_dir)
-            return
-
-        with open(config_path, "r") as f:
-            mod_config = json.load(f)
-
-        mod_name = mod_config.get("name")
-        mod_type = mod_config.get("type", "mod")
-        conflicts = mod_config.get("conflicts", [])
-
-        if not mod_name or mod_type not in ["mod", "texturepack"]:
-            result_queue.put(
-                ("error", "Invalid mod_config.rfmod: Missing or invalid name/type."))
-            shutil.rmtree(temp_dir)
-            return
-
-        internal_name = generate_unique_internal_name(mod_name)
-        external_mods = load_external_mods()
-        if internal_name in external_mods:
-            result_queue.put(
-                ("warning", f"Mod '{mod_name}' already exists (internal collision)."))
-            shutil.rmtree(temp_dir)
-            return
-
-        mod_dir = os.path.join(external_mods_dir, internal_name)
-        if os.path.exists(mod_dir):
-            shutil.rmtree(mod_dir)
-        shutil.move(temp_dir, mod_dir)
-
-        icon_src = os.path.join(mod_dir, "icon.png")
-        icon_dst = os.path.join(mod_dir, "icon.png")
-        if not os.path.exists(icon_src):
-            shutil.copy(os.path.join(images_folder, "play.png"), icon_dst)
-
-        external_mods[internal_name] = {
-            "name": mod_name,
-            "type": mod_type,
-            "config_path": os.path.join(mod_dir, "mod_config.rfmod"),
-            "icon_path": icon_dst
-        }
-        save_external_mods(external_mods)
-
-        for modpack in modpacks:
-            mod_state_path = os.path.join(
-                modpacks_dir, modpack, "mod_state.json")
-            mod_state = {}
-            if os.path.exists(mod_state_path):
-                with open(mod_state_path, "r") as f:
-                    mod_state = json.load(f)
-            mod_state[internal_name] = False
-            with open(mod_state_path, "w") as f:
-                json.dump(mod_state, f, indent=4)
-
-        def mod_apply_function(enabled):
-            apply_external_mod(
-                selected_modpack.get(),
-                internal_name,
-                mod_config,
-                enabled)
-
-        mod_apply_functions[internal_name] = mod_apply_function
-
-        app.after(
-            0,
-            lambda: add_mod_switch(
-                mod_name,
-                mod_apply_functions[internal_name],
-                external_mods[internal_name]["icon_path"]))
-
-        if mod_type == "texturepack":
-            texture_packs.append(mod_name)
-        else:
-            if mod_name in texture_packs:
-                texture_packs.remove(mod_name)
-
-        if mod_name not in MOD_NAME_MAPPING:
-            MOD_NAME_MAPPING[mod_name] = internal_name
-            INTERNAL_TO_DISPLAY[internal_name] = mod_name
-            CONFLICTING_MODS[mod_name] = conflicts
-
-        result_queue.put(("success", mod_name))
-
-    except Exception as e:
-        result_queue.put(("error", f"Failed to import mod: {str(e)}"))
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def check_external_mod_queue(loading_window, result_queue):
-    try:
-        message = result_queue.get_nowait()
-        msg_type, msg_data = message
-
-        if msg_type == "status":
-            loading_window.label.configure(text=msg_data)
-            app.after(
-                100,
-                check_external_mod_queue,
-                loading_window,
-                result_queue)
-        elif msg_type == "error":
-            loading_window.destroy()
-            messagebox.showerror("Import Error", msg_data)
-        elif msg_type == "warning":
-            loading_window.destroy()
-            messagebox.showwarning("Warning", msg_data)
-        elif msg_type == "log_warning":
-            logging.warning(msg_data)
-            app.after(
-                100,
-                check_external_mod_queue,
-                loading_window,
-                result_queue)
-        elif msg_type == "success":
-            loading_window.destroy()
-            messagebox.showinfo(
-                "Success",
-                f"Mod '{msg_data}' imported successfully and available for all modpacks!")
-            filter_mods(current_filter)
-
-    except queue.Empty:
-        app.after(100, check_external_mod_queue, loading_window, result_queue)
-    except Exception as e:
-        loading_window.destroy()
-        messagebox.showerror(
-            "Error", f"Unexpected error during mod import: {e}")
-
-
 def reapply_enabled_mods(modpack):
     if not modpack:
         logging.warning("No modpack selected for reapply_enabled_mods.")
@@ -389,30 +139,728 @@ def reapply_enabled_mods(modpack):
         with open(mod_state_path, "r") as f:
             mod_state = json.load(f)
 
+        # Apply internal mods
+        for internal_name, enabled in mod_state.items():
+            if not internal_name.startswith("external_") and enabled:
+                func = mod_apply_functions.get(internal_name)
+                if func:
+                    try:
+                        func(True)
+                        logging.info(f"Reapplied internal mod {internal_name} for modpack {modpack}")
+                    except Exception as e:
+                        logging.error(f"Failed to reapply internal mod {internal_name}: {str(e)}")
+
+        # Apply external mods
         external_mods = load_external_mods()
         for internal_name, enabled in mod_state.items():
             if internal_name.startswith("external_") and enabled:
                 mod_info = external_mods.get(internal_name)
                 if not mod_info:
-                    logging.warning(
-                        f"External mod {internal_name} not found in external_mods.json")
+                    logging.warning(f"External mod {internal_name} not found in external_mods.json")
                     continue
                 if not validate_external_mod_entry(internal_name, mod_info):
                     continue
                 try:
                     with open(mod_info["config_path"], "r") as f:
                         mod_config = json.load(f)
-                    logging.info(
-                        f"Reapplying enabled mod {mod_info['name']} ({internal_name}) for modpack {modpack}")
-                    apply_external_mod(
-                        modpack, internal_name, mod_config, True)
+                    logging.info(f"Reapplying enabled mod {mod_info['name']} ({internal_name}) for modpack {modpack}")
+                    apply_external_mod(modpack, internal_name, mod_config, True)
                 except Exception as e:
-                    logging.error(
-                        f"Failed to reapply mod {internal_name}: {str(e)}")
+                    logging.error(f"Failed to reapply mod {internal_name}: {str(e)}")
     except Exception as e:
-        logging.error(
-            f"Error reading mod_state.json for modpack {modpack}: {str(e)}")
+        logging.error(f"Error reading mod_state.json for modpack {modpack}: {str(e)}")
 
+def handle_mod_conflicts(activated_display_name):
+    modpack = selected_modpack
+    if not modpack or activated_display_name not in CONFLICTING_MODS:
+        return
+
+    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
+    if not os.path.exists(mod_state_path):
+        return
+
+    with open(mod_state_path, "r") as f:
+        mod_state = json.load(f)
+
+    changed = False
+    for conflicting_display_name in CONFLICTING_MODS[activated_display_name]:
+
+        internal_key = MOD_NAME_MAPPING.get(conflicting_display_name)
+        if not internal_key:
+            continue
+
+        if internal_key in mod_state and mod_state[internal_key]:
+
+            mod_state[internal_key] = False
+
+            if conflicting_display_name in mod_states:
+                mod_states[conflicting_display_name].set(False)
+
+            func_name = MOD_NAME_MAPPING.get(conflicting_display_name)
+            if func_name and func_name in mod_apply_functions:
+                mod_apply_functions[func_name](False)
+
+            changed = True
+            print(f"Disabled conflicting mod: {conflicting_display_name}")
+
+    if changed:
+        with open(mod_state_path, "w") as f:
+            json.dump(mod_state, f, indent=4)
+
+def get_roblox_folder():
+
+    potential_paths = [
+        os.path.join(os.getenv("LOCALAPPDATA"), "Roblox", "Versions"),
+        os.path.join("C:\\Program Files (x86)", "Roblox", "Versions"),
+        os.path.join("C:\\Program Files", "Roblox", "Versions")
+    ]
+
+    for path in potential_paths:
+        if os.path.exists(path):
+            for root, dirs, files in os.walk(path):
+                if "RobloxPlayerBeta.exe" in files and "RobloxPlayerBeta.dll" in files:
+                    print(root)
+                    return root
+    return None
+
+
+# Add these new functions to handle external mod creation and management
+
+def generate_unique_internal_name(display_name):
+    """Generate a unique internal name for a mod based on display name."""
+    base_name = display_name.lower().replace(' ', '_')
+    unique_id = str(uuid.uuid4())[:8]
+    return f"external_{base_name}_{unique_id}"
+
+
+def save_external_mods(mod_data):
+    """Save external mods data to the JSON file."""
+    try:
+        with open(external_mods_file, "w") as f:
+            json.dump(mod_data, f, indent=4)
+        return True
+    except Exception as e:
+        logging.error(f"Error saving external mods: {str(e)}")
+        return False
+
+
+def create_external_mod():
+    """Create a new external mod through a dialog interface."""
+    dialog = QDialog()
+    dialog.setWindowTitle("Create External Mod")
+    dialog.setMinimumSize(500, 600)
+
+    layout = QVBoxLayout()
+
+    # Mod name
+    name_label = QLabel("Mod Name:")
+    name_input = QLineEdit()
+    layout.addWidget(name_label)
+    layout.addWidget(name_input)
+
+    # Mod type
+    type_label = QLabel("Mod Type:")
+    type_combo = QComboBox()
+    type_combo.addItems(["mod", "texturepack"])
+    layout.addWidget(type_label)
+    layout.addWidget(type_combo)
+
+    # Icon selection
+    icon_label = QLabel("Mod Icon:")
+    icon_preview = QLabel()
+    icon_preview.setFixedSize(100, 100)
+    icon_preview.setStyleSheet("background-color: #333; border: 1px solid #444;")
+
+    def select_icon():
+        icon_path, _ = QFileDialog.getOpenFileName(
+            dialog,
+            "Select Mod Icon",
+            "",
+            "Image Files (*.png *.jpg *.jpeg)"
+        )
+        if icon_path:
+            try:
+                img = Image.open(icon_path)
+                img = img.resize((100, 100))
+                img.save("temp_icon.png")
+                pixmap = QPixmap("temp_icon.png")
+                os.remove("temp_icon.png")
+                icon_preview.setPixmap(pixmap)
+                return icon_path
+            except Exception as e:
+                QMessageBox.warning(dialog, "Error", f"Could not load image: {str(e)}")
+        return None
+
+    icon_button = QPushButton("Select Icon")
+    icon_button.clicked.connect(select_icon)
+
+    icon_layout = QHBoxLayout()
+    icon_layout.addWidget(icon_preview)
+    icon_layout.addWidget(icon_button)
+    layout.addLayout(icon_layout)
+
+    # File replacements
+    files_label = QLabel("File Replacements:")
+    files_table = QTableWidget()
+    files_table.setColumnCount(2)
+    files_table.setHorizontalHeaderLabels(["Source Path", "Destination Path"])
+    files_table.horizontalHeader().setStretchLastSection(True)
+
+    def add_file_replacement():
+        row = files_table.rowCount()
+        files_table.insertRow(row)
+
+        source_button = QPushButton("Browse")
+        dest_button = QPushButton("Browse")
+
+        def browse_source():
+            path, _ = QFileDialog.getOpenFileName(dialog, "Select Source File")
+            if path:
+                files_table.setItem(row, 0, QTableWidgetItem(path))
+
+        def browse_dest():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "Select Destination Path",
+                "",
+                "All Files (*)"
+            )
+            if path:
+                files_table.setItem(row, 1, QTableWidgetItem(path))
+
+        source_button.clicked.connect(browse_source)
+        dest_button.clicked.connect(browse_dest)
+
+        files_table.setCellWidget(row, 0, source_button)
+        files_table.setCellWidget(row, 1, dest_button)
+
+    add_file_button = QPushButton("Add File Replacement")
+    add_file_button.clicked.connect(add_file_replacement)
+
+    layout.addWidget(files_label)
+    layout.addWidget(files_table)
+    layout.addWidget(add_file_button)
+
+    # Fast flags
+    flags_label = QLabel("Fast Flags:")
+    flags_table = QTableWidget()
+    flags_table.setColumnCount(2)
+    flags_table.setHorizontalHeaderLabels(["Flag Name", "Flag Value"])
+    flags_table.horizontalHeader().setStretchLastSection(True)
+
+    def add_flag():
+        row = flags_table.rowCount()
+        flags_table.insertRow(row)
+        flags_table.setItem(row, 0, QTableWidgetItem(""))
+        flags_table.setItem(row, 1, QTableWidgetItem(""))
+
+    add_flag_button = QPushButton("Add Fast Flag")
+    add_flag_button.clicked.connect(add_flag)
+
+    layout.addWidget(flags_label)
+    layout.addWidget(flags_table)
+    layout.addWidget(add_flag_button)
+
+    # Conflicting mods
+    conflicts_label = QLabel("Conflicting Mods:")
+    conflicts_input = QLineEdit()
+    conflicts_input.setPlaceholderText("Comma-separated mod names")
+    layout.addWidget(conflicts_label)
+    layout.addWidget(conflicts_input)
+
+    # Buttons
+    button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    button_box.accepted.connect(dialog.accept)
+    button_box.rejected.connect(dialog.reject)
+    layout.addWidget(button_box)
+
+    dialog.setLayout(layout)
+
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        # Gather all mod data
+        mod_name = name_input.text().strip()
+        if not mod_name:
+            QMessageBox.warning(dialog, "Error", "Mod name cannot be empty!")
+            return
+
+        mod_type = type_combo.currentText()
+        icon_path = select_icon()  # Get the selected icon path
+
+        if not icon_path:
+            QMessageBox.warning(dialog, "Error", "Please select an icon for the mod!")
+            return
+
+        # Process file replacements
+        file_replacements = []
+        for row in range(files_table.rowCount()):
+            source = files_table.item(row, 0).text() if files_table.item(row, 0) else ""
+            dest = files_table.item(row, 1).text() if files_table.item(row, 1) else ""
+            if source and dest:
+                file_replacements.append({
+                    "source": os.path.basename(source),
+                    "destination": dest
+                })
+
+        # Process fast flags
+        fast_flags = {}
+        for row in range(flags_table.rowCount()):
+            flag_name = flags_table.item(row, 0).text() if flags_table.item(row, 0) else ""
+            flag_value = flags_table.item(row, 1).text() if flags_table.item(row, 1) else ""
+            if flag_name and flag_value:
+                fast_flags[flag_name] = flag_value
+
+        # Process conflicts
+        conflicts = [c.strip() for c in conflicts_input.text().split(",") if c.strip()]
+
+        # Create mod directory structure
+        internal_name = generate_unique_internal_name(mod_name)
+        mod_dir = os.path.join(external_mods_dir, internal_name)
+        os.makedirs(mod_dir, exist_ok=True)
+
+        # Copy icon
+        icon_dest = os.path.join(mod_dir, "icon.png")
+        shutil.copy(icon_path, icon_dest)
+
+        # Copy source files
+        for file in file_replacements:
+            src_path = file["source"]
+            dest_rel_path = os.path.join(mod_dir, os.path.basename(src_path))
+            shutil.copy(src_path, dest_rel_path)
+
+        # Create mod config
+        mod_config = {
+            "name": mod_name,
+            "type": mod_type,
+            "fast_flags": fast_flags,
+            "replace_files": file_replacements,
+            "conflicts": conflicts
+        }
+
+        config_path = os.path.join(mod_dir, "mod_config.rfmod")
+        with open(config_path, "w") as f:
+            json.dump(mod_config, f, indent=4)
+
+        # Add to external mods registry
+        external_mods = load_external_mods()
+        external_mods[internal_name] = {
+            "name": mod_name,
+            "type": mod_type,
+            "config_path": config_path,
+            "icon_path": icon_dest
+        }
+
+        if save_external_mods(external_mods):
+            # Add to MOD_NAME_MAPPING and CONFLICTING_MODS
+            MOD_NAME_MAPPING[mod_name] = internal_name
+            INTERNAL_TO_DISPLAY[internal_name] = mod_name
+            if conflicts:
+                CONFLICTING_MODS[mod_name] = conflicts
+
+            # Create apply function
+            def mod_apply_function(enabled):
+                apply_external_mod(selected_modpack, internal_name, mod_config, enabled)
+
+            mod_apply_functions[internal_name] = mod_apply_function
+
+            # Add to appropriate category
+            if mod_type == "texturepack":
+                texture_packs.append(mod_name)
+
+            QMessageBox.information(dialog, "Success", f"Mod '{mod_name}' created successfully!")
+            return True
+        else:
+            QMessageBox.warning(dialog, "Error", "Failed to save mod configuration!")
+            return False
+    return False
+
+
+def update_all_external_mods():
+    """Update all external mods by reloading their configurations."""
+    external_mods = load_external_mods()
+    if not external_mods:
+        QMessageBox.information(None, "Info", "No external mods found to update.")
+        return
+
+    # Create progress dialog
+    progress = QProgressDialog("Updating external mods...", "Cancel", 0, len(external_mods))
+    progress.setWindowTitle("Updating Mods")
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+
+    updated_count = 0
+
+    for i, (internal_name, mod_info) in enumerate(external_mods.items()):
+        progress.setValue(i)
+        QApplication.processEvents()
+
+        if progress.wasCanceled():
+            break
+
+        try:
+            config_path = mod_info["config_path"]
+            if not os.path.exists(config_path):
+                logging.warning(f"Config file not found for {mod_info['name']}")
+                continue
+
+            with open(config_path, "r") as f:
+                mod_config = json.load(f)
+
+            # Update the mod apply function
+            def mod_apply_function(enabled, name=internal_name, config=mod_config):
+                apply_external_mod(selected_modpack, name, config, enabled)
+
+            mod_apply_functions[internal_name] = mod_apply_function
+            updated_count += 1
+
+        except Exception as e:
+            logging.error(f"Failed to update mod {mod_info['name']}: {str(e)}")
+
+    progress.setValue(len(external_mods))
+    QMessageBox.information(None, "Complete",
+                            f"Successfully updated {updated_count}/{len(external_mods)} external mods.")
+
+
+def update_single_external_mod(internal_name):
+    """Update a single external mod by reloading its configuration."""
+    external_mods = load_external_mods()
+    mod_info = external_mods.get(internal_name)
+
+    if not mod_info:
+        QMessageBox.warning(None, "Error", "Mod not found in external mods list.")
+        return
+
+    try:
+        config_path = mod_info["config_path"]
+        if not os.path.exists(config_path):
+            QMessageBox.warning(None, "Error", f"Config file not found for {mod_info['name']}")
+            return
+
+        with open(config_path, "r") as f:
+            mod_config = json.load(f)
+
+        # Update the mod apply function
+        def mod_apply_function(enabled, name=internal_name, config=mod_config):
+            apply_external_mod(selected_modpack, name, config, enabled)
+
+        mod_apply_functions[internal_name] = mod_apply_function
+
+        # If currently enabled, reapply the mod
+        if selected_modpack:
+            mod_state_path = os.path.join(modpacks_dir, selected_modpack, "mod_state.json")
+            if os.path.exists(mod_state_path):
+                with open(mod_state_path, "r") as f:
+                    mod_state = json.load(f)
+                if mod_state.get(internal_name, False):
+                    apply_external_mod(selected_modpack, internal_name, mod_config, True)
+
+        QMessageBox.information(None, "Success",
+                                f"Mod '{mod_info['name']}' updated successfully!")
+    except Exception as e:
+        QMessageBox.critical(None, "Error",
+                             f"Failed to update mod {mod_info['name']}:\n{str(e)}")
+
+
+def show_external_mod_manager():
+    """Show a dialog to manage external mods."""
+    dialog = QDialog()
+    dialog.setWindowTitle("Manage External Mods")
+    dialog.setMinimumSize(600, 400)
+
+    layout = QVBoxLayout()
+
+    # Toolbar with new Update button
+    toolbar = QToolBar()
+    import_action = QAction("Import Mod", dialog)
+    create_action = QAction("Create Mod", dialog)
+    update_action = QAction("Update All", dialog)  # New action
+    remove_action = QAction("Remove Selected", dialog)
+
+    import_action.triggered.connect(import_external_mod)
+    create_action.triggered.connect(create_external_mod)
+    update_action.triggered.connect(update_all_external_mods)  # Connect to new function
+    remove_action.triggered.connect(lambda: remove_selected_mods(mods_table))
+
+    toolbar.addAction(import_action)
+    toolbar.addAction(create_action)
+    toolbar.addAction(update_action)  # Add to toolbar
+    toolbar.addAction(remove_action)
+    layout.addWidget(toolbar)
+
+    # Mods table
+    mods_table = QTableWidget()
+    mods_table.setColumnCount(4)
+    mods_table.setHorizontalHeaderLabels(["Name", "Type", "Status", "Actions"])
+    mods_table.horizontalHeader().setStretchLastSection(True)
+    mods_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    mods_table.verticalHeader().setDefaultSectionSize(60)  # Increase row height
+
+    # Load mods data
+    external_mods = load_external_mods()
+    mods_table.setRowCount(len(external_mods))
+
+    for row, (internal_name, mod_info) in enumerate(external_mods.items()):
+        mods_table.setItem(row, 0, QTableWidgetItem(mod_info["name"]))
+        mods_table.setItem(row, 1, QTableWidgetItem(mod_info["type"]))
+
+        # Status (whether it's enabled in current modpack)
+        status_item = QTableWidgetItem()
+        if selected_modpack:
+            mod_state_path = os.path.join(modpacks_dir, selected_modpack, "mod_state.json")
+            if os.path.exists(mod_state_path):
+                with open(mod_state_path, "r") as f:
+                    mod_state = json.load(f)
+                status = "Enabled" if mod_state.get(internal_name, False) else "Disabled"
+                status_item.setText(status)
+        else:
+            status_item.setText("N/A")
+        mods_table.setItem(row, 2, status_item)
+
+        # Action buttons
+        action_widget = QWidget()
+        action_layout = QHBoxLayout()
+        action_layout.setContentsMargins(5, 5, 5, 5)
+        action_layout.setSpacing(5)
+
+        # Add refresh button
+        refresh_button = QPushButton("Refresh")
+        refresh_button.setFixedSize(80, 30)
+        refresh_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3a5a78;
+                color: white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #4a6a88;
+            }
+        """)
+        refresh_button.clicked.connect(lambda _, name=internal_name: update_single_external_mod(name))
+        action_layout.addWidget(refresh_button)
+
+        if selected_modpack:
+            toggle_button = QPushButton("Toggle")
+            toggle_button.setFixedSize(80, 30)  # Set fixed size for consistency
+            toggle_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+            """)
+            toggle_button.clicked.connect(lambda _, name=internal_name: toggle_external_mod(name))
+            action_layout.addWidget(toggle_button)
+
+        edit_button = QPushButton("Edit")
+        edit_button.setFixedSize(80, 30)  # Set fixed size for consistency
+        edit_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        edit_button.clicked.connect(lambda _, name=internal_name: edit_external_mod(name))
+        action_layout.addWidget(edit_button)
+
+        action_widget.setLayout(action_layout)
+        mods_table.setCellWidget(row, 3, action_widget)
+
+    layout.addWidget(mods_table)
+    dialog.setLayout(layout)
+    dialog.exec()
+
+
+def toggle_external_mod(internal_name):
+    """Toggle an external mod's state for the current modpack."""
+    if not selected_modpack:
+        QMessageBox.warning(None, "Warning", "Please select a modpack first.")
+        return
+
+    mod_state_path = os.path.join(modpacks_dir, selected_modpack, "mod_state.json")
+    if not os.path.exists(mod_state_path):
+        QMessageBox.warning(None, "Warning", "No mod state file found for this modpack.")
+        return
+
+    with open(mod_state_path, "r") as f:
+        mod_state = json.load(f)
+
+    current_state = mod_state.get(internal_name, False)
+    new_state = not current_state
+
+    external_mods = load_external_mods()
+    mod_info = external_mods.get(internal_name)
+    if not mod_info:
+        QMessageBox.warning(None, "Error", "Mod configuration not found!")
+        return
+
+    with open(mod_info["config_path"], "r") as f:
+        mod_config = json.load(f)
+
+    apply_external_mod(selected_modpack, internal_name, mod_config, new_state)
+
+    # Update the UI
+    mod_state[internal_name] = new_state
+    with open(mod_state_path, "w") as f:
+        json.dump(mod_state, f, indent=4)
+
+    QMessageBox.information(None, "Success",
+                            f"Mod '{mod_info['name']}' is now {'enabled' if new_state else 'disabled'}.")
+
+
+def edit_external_mod(internal_name):
+    """Edit an existing external mod."""
+    external_mods = load_external_mods()
+    mod_info = external_mods.get(internal_name)
+    if not mod_info:
+        QMessageBox.warning(None, "Error", "Mod not found!")
+        return
+
+    with open(mod_info["config_path"], "r") as f:
+        mod_config = json.load(f)
+
+    dialog = QDialog()
+    dialog.setWindowTitle(f"Edit Mod: {mod_info['name']}")
+    dialog.setMinimumSize(500, 400)
+
+    layout = QVBoxLayout()
+
+    # Basic info
+    name_label = QLabel("Mod Name:")
+    name_input = QLineEdit(mod_info["name"])
+    layout.addWidget(name_label)
+    layout.addWidget(name_input)
+
+    # Mod type (readonly)
+    type_label = QLabel("Mod Type:")
+    type_display = QLabel(mod_info["type"])
+    layout.addWidget(type_label)
+    layout.addWidget(type_display)
+
+    # Fast flags editor
+    flags_label = QLabel("Fast Flags:")
+    flags_editor = QTextEdit()
+    flags_editor.setPlainText(json.dumps(mod_config.get("fast_flags", {}), indent=4))
+    layout.addWidget(flags_label)
+    layout.addWidget(flags_editor)
+
+    # File replacements (readonly display)
+    files_label = QLabel("File Replacements:")
+    files_display = QTextEdit()
+    files_display.setPlainText(json.dumps(mod_config.get("replace_files", []), indent=4))
+    files_display.setReadOnly(True)
+    layout.addWidget(files_label)
+    layout.addWidget(files_display)
+
+    # Conflicting mods
+    conflicts_label = QLabel("Conflicting Mods:")
+    conflicts_input = QLineEdit(", ".join(mod_config.get("conflicts", [])))
+    layout.addWidget(conflicts_label)
+    layout.addWidget(conflicts_input)
+
+    # Buttons
+    button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    button_box.accepted.connect(dialog.accept)
+    button_box.rejected.connect(dialog.reject)
+    layout.addWidget(button_box)
+
+    dialog.setLayout(layout)
+
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        # Update mod info
+        new_name = name_input.text().strip()
+        if not new_name:
+            QMessageBox.warning(dialog, "Error", "Mod name cannot be empty!")
+            return
+
+        try:
+            new_flags = json.loads(flags_editor.toPlainText())
+            new_conflicts = [c.strip() for c in conflicts_input.text().split(",") if c.strip()]
+
+            # Update mod config
+            mod_config["name"] = new_name
+            mod_config["fast_flags"] = new_flags
+            mod_config["conflicts"] = new_conflicts
+
+            with open(mod_info["config_path"], "w") as f:
+                json.dump(mod_config, f, indent=4)
+
+            # Update external mods registry
+            external_mods[internal_name]["name"] = new_name
+            save_external_mods(external_mods)
+
+            # Update global mappings if name changed
+            if new_name != mod_info["name"]:
+                if mod_info["name"] in MOD_NAME_MAPPING:
+                    del MOD_NAME_MAPPING[mod_info["name"]]
+                MOD_NAME_MAPPING[new_name] = internal_name
+
+                if mod_info["name"] in INTERNAL_TO_DISPLAY:
+                    INTERNAL_TO_DISPLAY[internal_name] = new_name
+
+                if mod_info["name"] in CONFLICTING_MODS:
+                    CONFLICTING_MODS[new_name] = CONFLICTING_MODS.pop(mod_info["name"])
+
+            QMessageBox.information(dialog, "Success", "Mod updated successfully!")
+            return True
+        except json.JSONDecodeError:
+            QMessageBox.warning(dialog, "Error", "Invalid JSON in fast flags!")
+            return False
+    return False
+
+
+def remove_selected_mods(table):
+    """Remove selected mods from the external mods list."""
+    selected_rows = set(index.row() for index in table.selectionModel().selectedRows())
+    if not selected_rows:
+        QMessageBox.warning(None, "Warning", "Please select at least one mod to remove.")
+        return
+
+    external_mods = load_external_mods()
+    mods_to_remove = []
+
+    for row in selected_rows:
+        internal_name = list(external_mods.keys())[row]
+        mods_to_remove.append((internal_name, external_mods[internal_name]["name"]))
+
+    reply = QMessageBox.question(
+        None,
+        "Confirm Removal",
+        f"Are you sure you want to remove these mods?\n{', '.join(name for _, name in mods_to_remove)}",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+
+    if reply == QMessageBox.StandardButton.Yes:
+        for internal_name, mod_name in mods_to_remove:
+            # Remove from external mods
+            del external_mods[internal_name]
+
+            # Remove from global mappings if present
+            if mod_name in MOD_NAME_MAPPING:
+                del MOD_NAME_MAPPING[mod_name]
+
+            if internal_name in INTERNAL_TO_DISPLAY:
+                del INTERNAL_TO_DISPLAY[internal_name]
+
+            if mod_name in CONFLICTING_MODS:
+                del CONFLICTING_MODS[mod_name]
+
+            # Remove mod directory
+            mod_dir = os.path.join(external_mods_dir, internal_name)
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir)
+
+        save_external_mods(external_mods)
+        QMessageBox.information(None, "Success", "Selected mods removed successfully!")
+        show_external_mod_manager()  # Refresh the manager
 
 def apply_external_mod(modpack, internal_name, mod_config, enabled):
     if not modpack:
@@ -527,1857 +975,181 @@ def apply_external_mod(modpack, internal_name, mod_config, enabled):
             f"Error applying external mod {internal_name} for modpack {modpack}: {str(e)}")
 
 
-def load_global_mods():
-    external_mods = load_external_mods()
-    invalid_mods = []
-
-    for internal_name, mod_info in external_mods.items():
-        if not validate_external_mod_entry(internal_name, mod_info):
-            invalid_mods.append(internal_name)
-            continue
-
-        try:
-            mod_name = mod_info["name"]
-            mod_type = mod_info["type"]
-            mod_config_path = mod_info["config_path"]
-            icon_path = mod_info["icon_path"]
-
-            with open(mod_config_path, "r") as f:
-                mod_config = json.load(f)
-
-            def mod_apply_function(
-                    enabled,
-                    iname=internal_name,
-                    config=mod_config):
-                apply_external_mod(
-                    selected_modpack.get(), iname, config, enabled)
-
-            mod_apply_functions[internal_name] = mod_apply_function
-            logging.debug(
-                f"Registered mod_apply_function for {internal_name} ({mod_name})")
-
-            if mod_type == "texturepack" and mod_name not in texture_packs:
-                texture_packs.append(mod_name)
-
-            if mod_name not in MOD_NAME_MAPPING:
-                MOD_NAME_MAPPING[mod_name] = internal_name
-                INTERNAL_TO_DISPLAY[internal_name] = mod_name
-                CONFLICTING_MODS[mod_name] = mod_config.get("conflicts", [])
-
-        except Exception as e:
+def validate_external_mod_entry(internal_name, mod_info):
+    try:
+        required_keys = ["name", "type", "config_path", "icon_path"]
+        if not all(key in mod_info for key in required_keys):
             logging.error(
-                f"Failed to load external mod {internal_name}: {str(e)}")
-            invalid_mods.append(internal_name)
+                f"Invalid mod entry {internal_name}: Missing required keys")
+            return False
+        if not os.path.exists(mod_info["config_path"]):
+            logging.error(
+                f"Invalid mod entry {internal_name}: Config path {mod_info['config_path']} does not exist")
+            return False
+        if mod_info["type"] not in ["mod", "texturepack"]:
+            logging.error(
+                f"Invalid mod entry {internal_name}: Invalid type {mod_info['type']}")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"Error validating mod entry {internal_name}: {str(e)}")
+        return False
 
-    if invalid_mods:
-        for internal_name in invalid_mods:
-            external_mods.pop(internal_name, None)
+
+def _import_external_mod_worker(zip_path, result_queue):
+    try:
+        result_queue.put(("status", "Extracting mod archive..."))
+        temp_dir = os.path.join(os.path.dirname(__file__), "TempModExtract")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+
+        config_path = os.path.join(temp_dir, "mod_config.rfmod")
+        if not os.path.exists(config_path):
+            result_queue.put(
+                ("error", "mod_config.rfmod not found in archive."))
+            shutil.rmtree(temp_dir)
+            return
+
+        with open(config_path, "r") as f:
+            mod_config = json.load(f)
+
+        mod_name = mod_config.get("name")
+        mod_type = mod_config.get("type", "mod")
+        conflicts = mod_config.get("conflicts", [])
+
+        if not mod_name or mod_type not in ["mod", "texturepack"]:
+            result_queue.put(
+                ("error", "Invalid mod_config.rfmod: Missing or invalid name/type."))
+            shutil.rmtree(temp_dir)
+            return
+
+        internal_name = generate_unique_internal_name(mod_name)
+        external_mods = load_external_mods()
+        if internal_name in external_mods:
+            result_queue.put(
+                ("warning", f"Mod '{mod_name}' already exists (internal collision)."))
+            shutil.rmtree(temp_dir)
+            return
+
+        mod_dir = os.path.join(external_mods_dir, internal_name)
+        if os.path.exists(mod_dir):
+            shutil.rmtree(mod_dir)
+        shutil.move(temp_dir, mod_dir)
+
+        icon_src = os.path.join(mod_dir, "icon.png")
+        icon_dst = os.path.join(mod_dir, "icon.png")
+        if not os.path.exists(icon_src):
+            shutil.copy(os.path.join(images_folder, "play.png"), icon_dst)
+
+        external_mods[internal_name] = {
+            "name": mod_name,
+            "type": mod_type,
+            "config_path": os.path.join(mod_dir, "mod_config.rfmod"),
+            "icon_path": icon_dst
+        }
         save_external_mods(external_mods)
-        logging.warning(f"Removed invalid mod entries: {invalid_mods}")
 
-def create_client_settings():
-    folder = get_roblox_folder()
-    if folder is None:
-        print("Roblox installation not found.")
-        return None
+        # Get list of modpacks from the modpacks directory
+        modpacks = [d for d in os.listdir(modpacks_dir)
+                    if os.path.isdir(os.path.join(modpacks_dir, d))]
 
-    version = os.path.basename(folder)
+        for modpack in modpacks:
+            mod_state_path = os.path.join(
+                modpacks_dir, modpack, "mod_state.json")
+            mod_state = {}
+            if os.path.exists(mod_state_path):
+                with open(mod_state_path, "r") as f:
+                    mod_state = json.load(f)
+            mod_state[internal_name] = False
+            with open(mod_state_path, "w") as f:
+                json.dump(mod_state, f, indent=4)
 
-    dst_folder = os.path.join(os.path.dirname(__file__), "RobloxCopy", version)
-    if os.path.exists(dst_folder):
-        print(
-            f"Roblox folder with version {version} already exists in project directory.")
-        return dst_folder
+        def mod_apply_function(enabled):
+            apply_external_mod(
+                selected_modpack,
+                internal_name,
+                mod_config,
+                enabled)
 
-    shutil.copytree(folder, dst_folder)
-    print(f"Copied Roblox folder to {dst_folder}")
+        mod_apply_functions[internal_name] = mod_apply_function
 
-    settings_folder = os.path.join(dst_folder, "ClientSettings")
-    if not os.path.exists(settings_folder):
-        os.makedirs(settings_folder)
-        print(f"Created ClientSettings folder at: {settings_folder}")
-
-    return dst_folder
-
-
-def show_loading_screen(message):
-    loading_window = Ctk.CTkToplevel(app)
-    loading_window.title("Loading...")
-    loading_window.geometry("300x150")
-    loading_window.resizable(False, False)
-    loading_window.transient(app)
-    loading_window.grab_set()
-
-    app_width = app.winfo_width()
-    app_height = app.winfo_height()
-    app_x = app.winfo_x()
-    app_y = app.winfo_y()
-    x = app_x + (app_width // 2) - 150
-    y = app_y + (app_height // 2) - 75
-    loading_window.geometry(f"+{x}+{y}")
-
-    loading_window.label = Ctk.CTkLabel(
-        loading_window,
-        text=message,
-        font=Ctk.CTkFont(
-            size=14))
-    loading_window.label.pack(pady=20, padx=20, fill='x')
-
-    loading_window.progressbar = Ctk.CTkProgressBar(
-        loading_window, mode='indeterminate')
-    loading_window.progressbar.pack(pady=10, padx=20, fill='x')
-    loading_window.progressbar.start()
-
-    loading_window.update_idletasks()
-    return loading_window
-
-
-def _create_modpack_worker(name, img_path_or_none, result_queue):
-    try:
-
-        result_queue.put(("status", "Finding Roblox installation..."))
-        folder = get_roblox_folder()
-        if folder is None:
-
-            result_queue.put(("error", "Roblox installation not found."))
-            return
-
-        version = os.path.basename(folder)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        modpack_folder = os.path.join(script_dir, "ModPacks", name)
-
-        if os.path.exists(modpack_folder):
-            result_queue.put(("warning", f"Modpack '{name}' already exists."))
-            return
-
-        modpacks_dir = os.path.join(script_dir, "ModPacks")
-        if not os.path.exists(modpacks_dir):
-            os.makedirs(modpacks_dir)
-
-        result_queue.put(
-            ("status", f"Copying Roblox files ({version[:10]})..."))
-        dst_folder = os.path.join(modpack_folder, "RobloxCopy", version)
-        shutil.copytree(
-            folder,
-            dst_folder,
-            copy_function=shutil.copy2,
-            dirs_exist_ok=True)
-
-        result_queue.put(("status", "Creating settings..."))
-        settings_folder = os.path.join(dst_folder, "ClientSettings")
-        os.makedirs(settings_folder, exist_ok=True)
-        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
-        if not os.path.exists(settings_file):
-            with open(settings_file, "w") as f:
-                json.dump({}, f, indent=4)
-
-        result_queue.put(("status", "Finalizing modpack..."))
-        target_image_path = os.path.join(modpack_folder, "image.png")
-        if img_path_or_none and img_path_or_none != "None":
-            if os.path.exists(img_path_or_none):
-                shutil.copy(img_path_or_none, target_image_path)
-            else:
-
-                result_queue.put(
-                    ("log_warning", f"Selected image not found: {img_path_or_none}. Using default."))
-                default_img = os.path.join(images_folder, "play.png")
-                if os.path.exists(default_img):
-                    shutil.copy(default_img, target_image_path)
-                else:
-                    result_queue.put(
-                        ("log_warning", "Default image 'play.png' not found."))
-
+        if mod_type == "texturepack":
+            texture_packs.append(mod_name)
         else:
-            default_img = os.path.join(images_folder, "play.png")
-            if os.path.exists(default_img):
-                shutil.copy(default_img, target_image_path)
-            else:
-                result_queue.put(
-                    ("log_warning", "Default image 'play.png' not found."))
+            if mod_name in texture_packs:
+                texture_packs.remove(mod_name)
 
-        result_queue.put(("success", name))
+        if mod_name not in MOD_NAME_MAPPING:
+            MOD_NAME_MAPPING[mod_name] = internal_name
+            INTERNAL_TO_DISPLAY[internal_name] = mod_name
+            CONFLICTING_MODS[mod_name] = conflicts
+
+        result_queue.put(("success", mod_name))
 
     except Exception as e:
-        logging.error(
-            f"Error creating modpack in worker thread: {e}",
-            exc_info=True)
+        result_queue.put(("error", f"Failed to import mod: {str(e)}"))
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
-        result_queue.put(("error", f"Failed to create modpack: {str(e)}"))
-
-
-def handle_mod_conflicts(activated_display_name):
-    modpack = selected_modpack.get()
-    if not modpack or activated_display_name not in CONFLICTING_MODS:
-        return
-
-    mod_state_path = os.path.join(modpacks_dir, modpack, "mod_state.json")
-    if not os.path.exists(mod_state_path):
-        return
-
-    with open(mod_state_path, "r") as f:
-        mod_state = json.load(f)
-
-    changed = False
-    for conflicting_display_name in CONFLICTING_MODS[activated_display_name]:
-
-        internal_key = MOD_NAME_MAPPING.get(conflicting_display_name)
-        if not internal_key:
-            continue
-
-        if internal_key in mod_state and mod_state[internal_key]:
-
-            mod_state[internal_key] = False
-
-            if conflicting_display_name in mod_states:
-                mod_states[conflicting_display_name].set(False)
-
-            func_name = MOD_NAME_MAPPING.get(conflicting_display_name)
-            if func_name and func_name in mod_apply_functions:
-                mod_apply_functions[func_name](False)
-
-            changed = True
-            print(f"Disabled conflicting mod: {conflicting_display_name}")
-
-    if changed:
-        with open(mod_state_path, "w") as f:
-            json.dump(mod_state, f, indent=4)
-
-
-def filter_mods(filter_type):
-    global current_filter
-    current_filter = filter_type
-    search_term = search_entry.get().lower() if hasattr(search_entry, 'get') else ""
-    for child in mods.winfo_children():
-        if isinstance(child, Ctk.CTkFrame):
-            mod_name = ""
-            for widget in child.winfo_children():
-                if isinstance(widget, Ctk.CTkLabel) and widget.cget("text"):
-                    mod_name = widget.cget("text")
-                    break
-            matches_filter = (
-                (filter_type == "mods" and mod_name not in texture_packs) or
-                (filter_type == "texturepacks" and mod_name in texture_packs)
-            )
-            matches_search = search_term in mod_name.lower()
-            if matches_filter and matches_search:
-                child.pack(pady=10, padx=10)
-            else:
-                child.pack_forget()
-
-
-logging.basicConfig(
-    filename='app.log',
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s %(message)s')
-
-Ctk.set_appearance_mode("Dark")
-Ctk.set_default_color_theme("dark-blue")
-
-images_folder = os.path.join(os.path.dirname(__file__), 'Assets', 'images')
-sounds_folder = os.path.join(os.path.dirname(__file__), 'Assets', 'sounds')
-meshes_folder = os.path.join(os.path.dirname(__file__), 'Assets', 'meshes')
-
-
-def export_modpack():
-    modpack_to_export = selected_modpack.get()
-    if not modpack_to_export:
-        messagebox.showwarning("Export Error",
-                               "Please select a modpack from Tab 2 first.")
-        return
-
-    mod_state_path = os.path.join(
-        modpacks_dir,
-        modpack_to_export,
-        "mod_state.json")
-
-    if not os.path.exists(mod_state_path):
-        messagebox.showerror(
-            "Export Error",
-            f"Mod state file not found for '{modpack_to_export}'. Cannot export.")
-        return
-
+def check_external_mod_queue(loading_window, result_queue):
     try:
-        with open(mod_state_path, "r") as f:
-            mod_state = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError) as e:
-        messagebox.showerror(
-            "Export Error",
-            f"Error reading mod state for '{modpack_to_export}': {e}")
-        return
+        message = result_queue.get_nowait()
+        msg_type, msg_data = message
 
-    save_path = filedialog.asksaveasfilename(
-        defaultextension=".roforgepack",
-        filetypes=[("RoForge Modpack List", "*.roforgepack"), ("All Files", "*.*")],
-        title="Export Modpack List As...",
-        initialfile=f"{modpack_to_export}.roforgepack"
-    )
+        if msg_type == "status":
+            loading_window.label.setText(msg_data)
+            QApplication.processEvents()
+        elif msg_type == "error":
+            loading_window.close()
+            QMessageBox.critical(None, "Import Error", msg_data)
+        elif msg_type == "warning":
+            loading_window.close()
+            QMessageBox.warning(None, "Warning", msg_data)
+        elif msg_type == "log_warning":
+            logging.warning(msg_data)
+        elif msg_type == "success":
+            loading_window.close()
+            QMessageBox.information(
+                None,
+                "Success",
+                f"Mod '{msg_data}' imported successfully and available for all modpacks!")
 
-    if not save_path:
-        return
-
-    try:
-        with open(save_path, 'w') as f:
-            json.dump(mod_state, f, indent=4)
-        messagebox.showinfo(
-            "Export Successful",
-            f"Mod list for '{modpack_to_export}' exported to:\n{save_path}")
-    except Exception as e:
-        messagebox.showerror(
-            "Export Error",
-            f"Failed to write export file: {e}")
-        logging.error(f"Failed to write export file '{save_path}': {e}")
+            # Refresh the mods display if we're in the mods page
+            if hasattr(app, 'activeWindow') and isinstance(app.activeWindow(), MainWindow):
+                app.activeWindow().filter_mods(current_filter)
+    except queue.Empty:
+        pass
 
 
-def _import_modpack_worker(new_modpack_name, imported_mod_state, result_queue):
-    new_modpack_folder = os.path.join(modpacks_dir, new_modpack_name)
-    original_selected = None
-
-    try:
-
-        result_queue.put(("status", "Finding Roblox installation..."))
-        folder = get_roblox_folder()
-        selected_modpack.set(new_modpack_name)
-        create_client_settings()
-        if folder is None:
-            result_queue.put(
-                ("error", "Current Roblox installation not found. Cannot create base for import."))
-            return
-
-        version = os.path.basename(folder)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        if not os.path.exists(modpacks_dir):
-            os.makedirs(modpacks_dir)
-
-        result_queue.put(("status", f"Copying Roblox v{version}..."))
-        logging.info(
-            f"Copying Roblox from '{folder}' to '{new_modpack_folder}' base")
-        dst_folder = os.path.join(new_modpack_folder, "RobloxCopy", version)
-
-        shutil.copytree(
-            folder,
-            dst_folder,
-            copy_function=shutil.copy2,
-            dirs_exist_ok=True)
-        logging.info(f"Copied Roblox folder to {dst_folder}")
-
-        result_queue.put(("status", "Creating settings..."))
-        settings_folder = os.path.join(dst_folder, "ClientSettings")
-        os.makedirs(settings_folder, exist_ok=True)
-        settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
-        if not os.path.exists(settings_file):
-            with open(settings_file, "w") as f:
-                json.dump({}, f, indent=4)
-            logging.info(
-                f"Created default ClientAppSettings.json file at: {settings_file}")
-
-        result_queue.put(("status", "Setting default image..."))
-        default_image_path = os.path.join(images_folder, "play.png")
-        target_image_path = os.path.join(new_modpack_folder, "image.png")
-        if os.path.exists(default_image_path):
-            shutil.copy(default_image_path, target_image_path)
-        else:
-            logging.warning(
-                "Default modpack image not found, skipping image copy.")
-            result_queue.put(
-                ("log_warning", "Default modpack image not found."))
-
-        result_queue.put(("status", "Applying mods..."))
-        logging.info(f"Applying imported mods to '{new_modpack_name}'")
-
-        applied_count = 0
-        skipped_mods = []
-        apply_errors = []
-        current_mod_state = {}
-
-        for key in mod_apply_functions.keys():
-            current_mod_state[key] = False
-
-        total_mods_to_process = len(imported_mod_state)
-        processed_count = 0
-
-        for mod_key, should_enable in imported_mod_state.items():
-            processed_count += 1
-            progress_percent = int(
-                (processed_count /
-                 total_mods_to_process) *
-                100) if total_mods_to_process else 0
-
-            if mod_key in mod_apply_functions:
-                current_mod_state[mod_key] = False
-                if should_enable:
-                    result_queue.put(
-                        ("status", f"Applying mod: {mod_key} ({progress_percent}%)"))
-                    try:
-                        logging.info(
-                            f"Enabling mod via import: {mod_key} for {new_modpack_name}")
-
-                        mod_apply_functions[mod_key](True)
-                        current_mod_state[mod_key] = True
-                        applied_count += 1
-                    except Exception as apply_error:
-                        err_msg = f"Error applying mod '{mod_key}': {apply_error}"
-                        logging.error(
-                            f"{err_msg} during import to '{new_modpack_name}'")
-                        apply_errors.append(f"- {mod_key}: {apply_error}")
-
-                        result_queue.put(("log_warning", err_msg))
-
-            else:
-                logging.warning(
-                    f"Imported mod list contains unknown mod key '{mod_key}'. Skipping.")
-                skipped_mods.append(mod_key)
-                result_queue.put(
-                    ("log_warning", f"Unknown mod key in import file: '{mod_key}'. Skipped."))
-
-        result_queue.put(("status", "Saving mod state..."))
-        new_mod_state_path = os.path.join(new_modpack_folder, "mod_state.json")
-        with open(new_mod_state_path, "w") as f:
-            json.dump(current_mod_state, f, indent=4)
-        logging.info(f"Saved final mod state to {new_mod_state_path}")
-
-        result_queue.put(
-            ("success",
-             (new_modpack_name,
-              applied_count,
-              skipped_mods,
-              apply_errors)))
-
-    except (FileNotFoundError, PermissionError, OSError, Exception) as e:
-        logging.exception(
-            f"Error during import worker thread for '{new_modpack_name}': {e}")
-
-        if os.path.exists(new_modpack_folder):
-            try:
-                result_queue.put(("status", "Error occurred. Cleaning up..."))
-                shutil.rmtree(new_modpack_folder, ignore_errors=True)
-                logging.info(
-                    f"Cleaned up partially created folder: {new_modpack_folder}")
-            except Exception as cleanup_e:
-                logging.error(
-                    f"Failed to cleanup folder {new_modpack_folder} after error: {cleanup_e}")
-
-        result_queue.put(("error", f"Import failed: {str(e)}"))
-
-
-def import_modpack():
+def import_external_mod():
     import_path = filedialog.askopenfilename(
-        filetypes=[("RoForge Modpack List", "*.roforgepack"), ("All Files", "*.*")],
-        title="Import Modpack List"
+        filetypes=[("RoForge Mod", "*.zip"), ("All Files", "*.*")],
+        title="Import External Mod or Texture Pack"
     )
     if not import_path:
         return
 
-    try:
-        with open(import_path, 'r') as f:
-            imported_mod_state = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        messagebox.showerror(
-            "Import Error",
-            f"Failed to read or parse import file:\n{import_path}\nError: {e}")
-        logging.error(f"Failed to read/parse import file '{import_path}': {e}")
-        return
-    except Exception as e:
-        messagebox.showerror(
-            "Import Error",
-            f"An unexpected error occurred reading the file:\n{e}")
-        logging.error(
-            f"Unexpected error reading import file '{import_path}': {e}")
-        return
-
-    dialog = CTkInputDialog(
-        text="Enter a name for the new imported modpack:",
-        title="Import Modpack")
-    new_modpack_name = dialog.get_input()
-
-    if not new_modpack_name:
-        return
-
-    target_modpack_folder = os.path.join(modpacks_dir, new_modpack_name)
-    if os.path.exists(target_modpack_folder):
-        messagebox.showerror(
-            "Import Error",
-            f"A modpack named '{new_modpack_name}' already exists.")
-        return
-
-    loading_window = show_loading_screen(
-        f"Starting import: '{new_modpack_name}'...")
-
+    loading_window = LoadingDialog(None, "Importing external mod...")  # Pass None as parent
     result_queue = queue.Queue()
 
-    original_selected_modpack = selected_modpack.get()
-
     thread = threading.Thread(
-        target=_import_modpack_worker,
-        args=(new_modpack_name, imported_mod_state, result_queue),
+        target=_import_external_mod_worker,
+        args=(import_path, result_queue),
         daemon=True
     )
     thread.start()
 
-    app.after(
-        100,
-        check_import_modpack_queue,
-        loading_window,
-        result_queue,
-        new_modpack_name,
-        original_selected_modpack)
-
-
-def check_import_modpack_queue(
-        loading_window,
-        result_queue,
-        imported_name,
-        original_selection):
-    try:
-        message = result_queue.get_nowait()
-        msg_type, msg_data = message
-
-        if msg_type == "status":
-            if loading_window.winfo_exists():
-                loading_window.label.configure(text=msg_data)
-
-            app.after(
-                100,
-                check_import_modpack_queue,
-                loading_window,
-                result_queue,
-                imported_name,
-                original_selection)
-        elif msg_type == "log_warning":
-            logging.warning(f"Import Warning ({imported_name}): {msg_data}")
-
-            app.after(
-                100,
-                check_import_modpack_queue,
-                loading_window,
-                result_queue,
-                imported_name,
-                original_selection)
-        elif msg_type == "error":
-            if loading_window.winfo_exists():
-                loading_window.destroy()
-            messagebox.showerror("Import Error", msg_data)
-
-            if imported_name in modpacks:
-                modpacks.remove(imported_name)
-                update_modpacks_frame()
-
-        elif msg_type == "success":
-            if loading_window.winfo_exists():
-                loading_window.destroy()
-
-            created_name, applied_count, skipped_mods, apply_errors = msg_data
-
-            if created_name not in modpacks:
-                modpacks.append(created_name)
-            update_modpacks_frame()
-
-            selected_modpack.set(created_name)
-
-            success_message = f"Successfully imported modpack '{created_name}'!"
-            if skipped_mods:
-                success_message += f"\n\nSkipped unknown mods:\n{', '.join(skipped_mods)}"
-            if apply_errors:
-                success_message += f"\n\nErrors applying some mods (check logs):\n" + "\n".join(
-                    apply_errors)
-
-            messagebox.showinfo("Import Successful", success_message)
-            logging.info(
-                f"Import complete for '{created_name}'. Applied {applied_count} mods. Skipped: {len(skipped_mods)}. Errors: {len(apply_errors)}.")
-
-    except queue.Empty:
-
-        app.after(
-            100,
-            check_import_modpack_queue,
-            loading_window,
-            result_queue,
-            imported_name,
-            original_selection)
-    except Exception as e:
-
-        logging.error(f"Error processing import queue: {e}", exc_info=True)
-        if loading_window.winfo_exists():
-            loading_window.destroy()
-        messagebox.showerror(
-            "Error",
-            f"An unexpected error occurred while checking import status: {e}")
-
-        target_modpack_folder = os.path.join(modpacks_dir, imported_name)
-        if os.path.exists(target_modpack_folder):
-            try:
-                shutil.rmtree(target_modpack_folder, ignore_errors=True)
-                logging.warning(
-                    f"Cleaned up {target_modpack_folder} due to queue check error.")
-            except Exception as cleanup_e:
-                logging.error(
-                    f"Failed to cleanup {target_modpack_folder} after queue check error: {cleanup_e}")
-        if imported_name in modpacks:
-            modpacks.remove(imported_name)
-            update_modpacks_frame()
-
-
-def button_function():
-    print("button pressed")
-
-
-def get_roblox_folder():
-
-    potential_paths = [
-        os.path.join(os.getenv("LOCALAPPDATA"), "Roblox", "Versions"),
-        os.path.join("C:\\Program Files (x86)", "Roblox", "Versions"),
-        os.path.join("C:\\Program Files", "Roblox", "Versions")
-    ]
-
-    for path in potential_paths:
-        if os.path.exists(path):
-            for root, dirs, files in os.walk(path):
-                if "RobloxPlayerBeta.exe" in files and "RobloxPlayerBeta.dll" in files:
-                    print(root)
-                    return root
-    return None
-
-
-def save_json(data):
-    settings_folder = create_client_settings()
-    if settings_folder:
-        json_path = os.path.join(settings_folder, "ClientAppSettings.json")
-        with open(json_path, 'w') as f:
-            json.dump(data, f, indent=4)
-            print(f"Saved JSON to {json_path}. Restart Roblox to see changes.")
-
-
-def update_modpacks_frame():
-
-    for widget in modpacks_image_frame.winfo_children():
-        widget.destroy()
-
-    num_columns = int(math.sqrt(len(modpacks)))
-    if num_columns * (num_columns - 1) >= len(modpacks):
-        num_columns -= 1
-
-    x = 0
-    y = 0
-    for modpack in modpacks:
-        image_path = os.path.join(modpacks_dir, modpack, "image.png")
-
-        image = Ctk.CTkImage(
-            light_image=Image.open(image_path), size=(
-                145, 145))
-
-        button = Ctk.CTkButton(
-            master=modpacks_image_frame,
-            text=modpack,
-            image=image,
-            compound="top",
-            command=lambda m=modpack: select_modpack(m),
-            fg_color="#222222",
-            hover_color="#000001",
-            width=100,
-            height=200)
-        button.grid(row=y, column=x, pady=2, padx=2)
-
-        button.photo = image
-
-        if x < 3:
-            x += 1
-        else:
-            x = 0
-            y += 1
-
-
-def create_modpack():
-    name = name_entry.get()
-    if not name:
-        messagebox.showinfo("Info", "Please enter a name for the modpack.")
-        return
-
-    img_path_or_none = img_data.get()
-    if img_path_or_none == "":
-        img_path_or_none = None
-
-    loading_window = show_loading_screen(f"Starting creation for '{name}'...")
-
-    result_queue = queue.Queue()
-
-    thread = threading.Thread(
-        target=_create_modpack_worker,
-        args=(name, img_path_or_none, result_queue),
-        daemon=True
-    )
-    thread.start()
-
-    app.after(
-        100,
-        check_create_modpack_queue,
-        loading_window,
-        result_queue,
-        name)
-
-
-def check_create_modpack_queue(loading_window, result_queue, original_name):
-    try:
-
-        message = result_queue.get_nowait()
-        msg_type, msg_data = message
-
-        if msg_type == "status":
-            loading_window.label.configure(text=msg_data)
-
-            app.after(
-                100,
-                check_create_modpack_queue,
-                loading_window,
-                result_queue,
-                original_name)
-        elif msg_type == "error":
-            loading_window.destroy()
-            messagebox.showerror("Error", msg_data)
-
-        elif msg_type == "warning":
-            loading_window.destroy()
-            messagebox.showwarning("Warning", msg_data)
-
-        elif msg_type == "log_warning":
-            logging.warning(msg_data)
-
-            app.after(
-                100,
-                check_create_modpack_queue,
-                loading_window,
-                result_queue,
-                original_name)
-        elif msg_type == "success":
-            created_name = msg_data
-            loading_window.destroy()
-
-            if created_name not in modpacks:
-                modpacks.append(created_name)
-            update_modpacks_frame()
-            selected_modpack.set(created_name)
-            show_tab("Tab2")
-            messagebox.showinfo(
-                "Success", f"Modpack '{created_name}' created successfully!")
-
-    except queue.Empty:
-
-        app.after(
-            100,
-            check_create_modpack_queue,
-            loading_window,
-            result_queue,
-            original_name)
-    except Exception as e:
-
-        logging.error(f"Error processing modpack queue: {e}", exc_info=True)
-        if loading_window.winfo_exists():
-            loading_window.destroy()
-        messagebox.showerror("Error", f"An unexpected error occurred: {e}")
-
-
-def show_tab(tab):
-    """Show a tab and initialize mod switches with saved states."""
-    Tab1Frame.place_forget()
-    Tab2Frame.place_forget()
-    Tab3Frame.place_forget()
-
-    if tab == "Tab1":
-        Tab1Frame.place(x=10, y=10)
-    elif tab == "Tab2":
-        Tab2Frame.place(x=10, y=10)
-
-        for child in mods.winfo_children():
-            child.destroy()
-        mod_states.clear()
-        mod_apply_functions.clear()
-
-        internal_mods = [
-            ("R63 avatar", replace_character_meshes, os.path.join(images_folder, "girl.jpg")),
-            ("Faster inputs", faster_inputs, os.path.join(images_folder, "keyboard.png")),
-            ("Replace Font", replace_font, os.path.join(images_folder, "Replace Font.png")),
-            ("Optimizer", apply_optimizer, os.path.join(images_folder, "Optimizer.png")),
-            ("Cheat", apply_cheat, os.path.join(images_folder, "cheat.png")),
-            ("Change celestial bodies", apply_day_night_cycle, os.path.join(images_folder, "moon.jpg")),
-            ("Hide gui", apply_hide_gui, os.path.join(images_folder, "hide.png")),
-            ("Remove grass", apply_remove_grass_mesh, os.path.join(images_folder, "grass.png")),
-            ("Display fps", apply_display_fps, os.path.join(images_folder, "displayfps.png")),
-            ("Disable remotes", disable_remotes, os.path.join(images_folder, "RemoteEvent.png")),
-            ("Unlock fps", unlock_fps, os.path.join(images_folder, "unlock_fps.png")),
-            ("Custom death sound", apply_custom_ouch_sound, os.path.join(images_folder, "noob.png")),
-            ("Google browser", google_browser, os.path.join(images_folder, "google.png")),
-            ("Chat gpt", chat_gpt, os.path.join(images_folder, "ChatGPT_logo.svg.png")),
-            ("Graphic boost", graphic_boost, os.path.join(images_folder, "graphics.png")),
-            ("Beautiful sky", beautiful_sky, os.path.join(images_folder, "beautiful.png")),
-            ("Anime chan sky", anime_chan_sky, os.path.join(images_folder, "Chan.png")),
-            ("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join(images_folder, "bloxstrap.png")),
-        ]
-
-        for mod_name, mod_function, icon_path in internal_mods:
-            internal_name = MOD_NAME_MAPPING.get(
-                mod_name, mod_name.lower().replace(' ', '_'))
-            mod_apply_functions[internal_name] = mod_function
-            add_mod_switch(mod_name, mod_function, icon_path)
-
-        external_mods = load_external_mods()
-        for internal_name, mod_info in external_mods.items():
-            if not validate_external_mod_entry(internal_name, mod_info):
-                continue
-            try:
-                mod_name = mod_info["name"]
-                mod_config_path = mod_info["config_path"]
-                icon_path = mod_info["icon_path"]
-                with open(mod_config_path, "r") as f:
-                    mod_config = json.load(f)
-
-                def mod_apply_function(
-                        enabled,
-                        iname=internal_name,
-                        config=mod_config):
-                    apply_external_mod(
-                        selected_modpack.get(), iname, config, enabled)
-
-                mod_apply_functions[internal_name] = mod_apply_function
-                add_mod_switch(
-                    mod_name,
-                    mod_apply_functions[internal_name],
-                    icon_path)
-            except Exception as e:
-                logging.error(
-                    f"Failed to add switch for external mod {internal_name}: {str(e)}")
-
-        modpack = selected_modpack.get()
-        if modpack:
-            mod_state_path = os.path.join(
-                modpacks_dir, modpack, "mod_state.json")
-            if os.path.exists(mod_state_path):
-                try:
-                    with open(mod_state_path, "r") as f:
-                        mod_state = json.load(f)
-                    for internal_name, enabled in mod_state.items():
-
-                        mod_name = INTERNAL_TO_DISPLAY.get(internal_name)
-                        if not mod_name and internal_name in external_mods:
-                            mod_name = external_mods[internal_name]["name"]
-                        if mod_name and mod_name in mod_states:
-                            mod_states[mod_name].set(enabled)
-                            logging.debug(
-                                f"Set mod state for {mod_name} ({internal_name}): {enabled}")
-                        else:
-                            logging.warning(
-                                f"Mod {internal_name} not found in mod_states for modpack {modpack}")
-                except Exception as e:
-                    logging.error(
-                        f"Error loading mod_state.json for modpack {modpack}: {str(e)}")
-
-        if hasattr(search_entry, 'delete'):
-            search_entry.delete(0, "end")
-        filter_mods("mods")
-
-        if modpack:
-            icon_path = os.path.join(modpacks_dir, modpack, "image.png")
-            try:
-                icon_image = Ctk.CTkImage(
-                    light_image=Image.open(icon_path), size=(
-                        125, 125))
-                selected_modpack_icon_label.configure(image=icon_image)
-                selected_modpack_icon_label.image = icon_image
-            except Exception as e:
-                logging.warning(
-                    f"Failed to load modpack icon {icon_path}: {str(e)}")
-            modpack_name_label.configure(text=f"{modpack}")
-
-    elif tab == "Tab3":
-        Tab3Frame.place(x=10, y=10)
-
-
-def show_tab1():
-    Tab1Frame.place_forget()
-    Tab2Frame.place_forget()
-    Tab3Frame.place_forget()
-    createframe.place_forget()
-    createblur.pack_forget()
-
-    Tab1Frame.place(x=10, y=10)
-
-
-def show_create_modpack():
-    Tab1Frame.place_forget()
-    Tab2Frame.pack_forget()
-    Tab3Frame.pack_forget()
-
-    Tab1Frame.place(x=10, y=10)
-
-def create_modpack_tab():
-    createframe.place(x=100, y=150)
-    createblur.pack(pady=10, padx=10, expand=False, side=Ctk.LEFT)
-    img_data.set(value="None")
-
-
-def remove_modpack_tab():
-    createframe.place_forget()
-    createblur.pack_forget()
-
-    change_button.configure(image=img2)
-
-
-def create_settings_tab():
-    createframe2.place(x=100, y=150)
-    createblur2.pack(pady=10, padx=10, expand=False, side=Ctk.LEFT)
-
-
-def remove_settings_tab():
-    createframe2.place_forget()
-    createblur2.pack_forget()
-
-def select_modpack(m):
-    selected_modpack.set(m)
-    show_tab("Tab2")
-
-def change_image():
-    image_path = filedialog.askopenfilename(
-        title="Select an image file", filetypes=[
-            ("Image files", "*.png;*.jpg;*.jpeg")])
-    img_data.set(image_path)
-
-    img3 = Image.open(image_path)
-    img4 = Ctk.CTkImage(img3, size=(75, 75))
-
-    change_button.configure(image=img4)
-
-def toggle_multi_roblox():
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel32.GetCurrentProcess()
-    mutexes = [
-        "ROBLOX_singletonMutex",
-        "ROBLOX_singletonEvent",
-        "ROBLOX_SingletonEvent",
-        "RobloxMultiplayerPipe",
-        "RobloxGameExplorer"
-    ]
-    mutex_handles = []
-
-    if multi_roblox_enabled.get():
-        for mutex_name in mutexes:
-            mutex = kernel32.CreateMutexW(None, False, mutex_name)
-            if mutex == 0:
-                continue
-            mutex_handles.append(mutex)
-        print("Enabled multi-instance")
-    else:
-        for mutex_name in mutexes:
-            mutex = kernel32.OpenMutexW(0x0001, False, mutex_name)
-            if mutex == 0:
-                continue
-            kernel32.ReleaseMutex(mutex)
-            kernel32.CloseHandle(mutex)
-        print("Disabled multi-instance")
-
-def load_fast_flags():
-    modpack = selected_modpack.get()
-    if not modpack:
-        messagebox.showwarning("Warning", "Please select a modpack.")
-        return
-
-    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
-    version = os.listdir(roblox_path)[0]
-
-    settings_path = os.path.join(
-        roblox_path,
-        version,
-        "ClientSettings",
-        "ClientAppSettings.json")
-
-    with open(settings_path, "r") as f:
-        settings = json.load(f)
-
-    text_widget.delete(1.0, "end")
-    text_widget.insert("end", json.dumps(settings, indent=4))
-
-
-def save_fast_flags():
-    modpack = selected_modpack.get()
-    if not modpack:
-        messagebox.showwarning("Warning", "Please select a modpack.")
-        return
-
-    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
-    version = os.listdir(roblox_path)[0]
-
-    settings_path = os.path.join(
-        roblox_path,
-        version,
-        "ClientSettings",
-        "ClientAppSettings.json")
-
-    json_content = text_widget.get(1.0, "end")
-
-    try:
-        settings = json.loads(json_content)
-
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=4)
-
-        messagebox.showinfo("Info", "Fast flags saved successfully.")
-    except json.JSONDecodeError:
-        messagebox.showerror(
-            "Error", "Invalid JSON content. Please check the syntax.")
-
-
-def toggle_fflag_editor():
-    if fflag_editor_frame.winfo_ismapped():
-        createblur3.place_forget()
-        fflag_editor_frame.place_forget()
-    else:
-        load_fast_flags()
-        fflag_editor_frame.place(x=60, y=75)
-        createblur3.place(x=10, y=10)
-
-
-def delete_selected_modpack():
-    modpack_to_delete = selected_modpack.get()
-
-    if not modpack_to_delete:
-        messagebox.showwarning("Delete Error", "No modpack selected.")
-        return
-
-    confirm = messagebox.askyesno(
-        "Confirm Deletion",
-        f"Are you sure you want to permanently delete the modpack '{modpack_to_delete}'?\n\n"
-        "This action cannot be undone and will remove all its files.",
-        icon='warning')
-
-    if not confirm:
-        logging.info(f"Deletion cancelled for modpack: {modpack_to_delete}")
-        return
-
-    modpack_path = os.path.join(modpacks_dir, modpack_to_delete)
-    logging.info(f"Attempting to delete modpack: {modpack_path}")
-
-    try:
-        if os.path.exists(modpack_path):
-
-            shutil.rmtree(modpack_path)
-            logging.info(f"Successfully deleted directory: {modpack_path}")
-
-            try:
-                modpacks.remove(modpack_to_delete)
-                logging.info(
-                    f"Removed '{modpack_to_delete}' from internal modpacks list.")
-            except ValueError:
-                logging.warning(
-                    f"Modpack '{modpack_to_delete}' was already removed from the list?")
-
-            selected_modpack.set("")
-            update_modpacks_frame()
-            show_tab("Tab1")
-            remove_modpack_tab()
-
-        else:
-            logging.warning(
-                f"Tried to delete modpack, but path not found: {modpack_path}")
-            messagebox.showerror(
-                "Delete Error",
-                f"Could not find the directory for modpack '{modpack_to_delete}'. It might have been already deleted.")
-
-            if modpack_to_delete in modpacks:
-                modpacks.remove(modpack_to_delete)
-                update_modpacks_frame()
-
-    except PermissionError:
-        logging.error(
-            f"Permission denied while trying to delete {modpack_path}")
-        messagebox.showerror(
-            "Delete Error",
-            f"Permission denied when trying to delete '{modpack_to_delete}'.\n\nTry running RoForge as an administrator.")
-    except OSError as e:
-        logging.exception(f"OS error deleting {modpack_path}: {e}")
-        messagebox.showerror(
-            "Delete Error",
-            f"An OS error occurred trying to delete '{modpack_to_delete}':\n{e}\n\nEnsure Roblox is not running from this modpack.")
-    except Exception as e:
-        logging.exception(
-            f"Unexpected error deleting modpack '{modpack_to_delete}'")
-        messagebox.showerror(
-            "Delete Error",
-            f"An unexpected error occurred while deleting '{modpack_to_delete}':\n{e}")
-
-
-def launch_modpack():
-    modpack = selected_modpack.get()
-    if not modpack:
-        print("Please select a modpack.")
-        return
-
-    roblox_path = os.path.join(modpacks_dir, modpack, "RobloxCopy")
-    version = os.listdir(roblox_path)[0]
-
-    roblox_exe_path = os.path.join(
-        roblox_path, version, "RobloxPlayerBeta.exe")
-
-    subprocess.Popen([roblox_exe_path])
-
-
-'''Yeah here is the start of ui...'''
-
-
-app = Ctk.CTk()
-
-os.path.join(images_folder, "play.ico")
-
-img22 = tk.PhotoImage(file=os.path.join(images_folder, "play.png"))
-
-app.wm_iconbitmap()
-app.iconphoto(False, img22)
-
-app.title("RoForge")
-app.geometry("1200x800")
-app.wm_iconphoto(True, img22)
-app.resizable(False, False)
-
-image = Image.open((os.path.join(images_folder, "background.jpg")))
-background_image = Ctk.CTkImage(image, size=(1200, 800))
-
-mod_states = {}
-
-bg_lbl = Ctk.CTkLabel(app, text="", image=background_image)
-bg_lbl.place(x=0, y=0)
-
-label = Ctk.CTkLabel(app, text="")
-label.pack(padx=20, pady=20)
-
-tabsFrame = Ctk.CTkScrollableFrame(
-    master=app,
-    width=150,
-    height=605,
-    fg_color="#000000")
-
-tabsText = Ctk.CTkLabel(master=tabsFrame, text="Application")
-
-button = Ctk.CTkButton(
-    master=tabsFrame,
-    text="Create modpacks",
-    command=lambda: show_tab("Tab1"),
-    width=150,
-    height=50)
-
-button2 = Ctk.CTkButton(
-    master=tabsFrame,
-    text="Mods",
-    command=lambda: show_tab("Tab2"),
-    width=150,
-    height=50)
-
-button3 = Ctk.CTkButton(
-    master=tabsFrame,
-    text="Tab 3",
-    command=lambda: show_tab("Tab3"),
-    width=150,
-    height=50)
-
-modpacks_dir = os.path.join(os.path.dirname(__file__), "ModPacks")
-if not os.path.exists(modpacks_dir):
-    modpacks = []
-else:
-    modpacks = [
-        f for f in os.listdir(modpacks_dir) if os.path.isdir(
-            os.path.join(
-                modpacks_dir,
-    f))]
-
-
-Tab1Frame = Ctk.CTkFrame(master=app, width=700, height=780, fg_color="#111111")
-Tab1Frame.pack_propagate(False)
-
-img_data = Ctk.StringVar(value="None")
-createblur = Ctk.CTkFrame(
-    master=app,
-    width=700,
-    height=702,
-    fg_color="#111111")
-createblur.pack_propagate(False)
-createframe = Ctk.CTkFrame(
-    master=app,
-    width=500,
-    height=500,
-    fg_color="#222222")
-createframe.pack_propagate(False)
-
-simple_frame = Ctk.CTkFrame(
-    master=createframe,
-    width=700,
-    height=45,
-    fg_color="#222222")
-simple_frame.pack_propagate(False)
-simple_frame.pack(pady=30, padx=20, side=Ctk.TOP, expand=False)
-
-simple_frame2 = Ctk.CTkFrame(
-    master=createframe,
-    width=700,
-    height=90,
-    fg_color="#222222")
-simple_frame2.pack_propagate(False)
-simple_frame2.pack(pady=0, padx=20, side=Ctk.TOP, expand=False)
-
-simple_frame3 = Ctk.CTkFrame(
-    master=simple_frame2,
-    width=200,
-    height=90,
-    fg_color="#222222")
-simple_frame3.pack_propagate(False)
-simple_frame3.pack(pady=0, padx=50, side=Ctk.RIGHT, expand=False)
-
-simple_frame4 = Ctk.CTkFrame(
-    master=simple_frame2,
-    width=200,
-    height=200,
-    fg_color="#222222")
-simple_frame4.pack_propagate(False)
-simple_frame4.pack(pady=0, padx=10, side=Ctk.LEFT, expand=False)
-
-label_new = Ctk.CTkLabel(
-    master=simple_frame,
-    text="Create a profile",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=24))
-label_new.pack(pady=10, padx=10, side=Ctk.LEFT)
-
-label_new2 = Ctk.CTkLabel(
-    master=simple_frame3,
-    text="Profile name",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20))
-label_new2.pack(pady=10, padx=10, side=Ctk.TOP)
-
-name_entry = Ctk.CTkEntry(
-    master=simple_frame3,
-    placeholder_text="Profile name",
-    width=250)
-framenew = Ctk.CTkFrame(
-    master=createframe,
-    width=700,
-    height=90,
-    fg_color="#222222")
-create_button = Ctk.CTkButton(
-    master=framenew,
-    text="Create",
-    command=create_modpack,
-    width=130,
-    height=70,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20))
-cancel_button = Ctk.CTkButton(
-    master=framenew,
-    text="Cancel",
-    command=remove_modpack_tab,
-    width=185,
-    height=70,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20))
-framenew.pack(pady=0, padx=20, side=Ctk.BOTTOM, expand=False)
-
-img1 = Image.open((os.path.join(images_folder, "play.png")))
-img2 = Ctk.CTkImage(img1, size=(75, 75))
-
-change_button = Ctk.CTkButton(
-    master=simple_frame4,
-    text="",
-    command=change_image,
-    width=75,
-    height=150,
-    image=img2,
-    fg_color="#111111",
-    hover_color="#000001")
-
-change_button.pack_propagate(False)
-
-name_entry.pack(pady=0, padx=0, side=Ctk.RIGHT)
-create_button.pack(pady=20, padx=50, side=Ctk.RIGHT)
-cancel_button.pack(pady=20, padx=50, side=Ctk.LEFT)
-change_button.pack(pady=0, padx=0, side=Ctk.BOTTOM, fill='y')
-
-
-multi_roblox_enabled = Ctk.BooleanVar(value=False)
-
-img_data = Ctk.StringVar(value="None")
-createblur2 = Ctk.CTkFrame(
-    master=app,
-    width=700,
-    height=702,
-    fg_color="#111111")
-createblur2.pack_propagate(False)
-createframe2 = Ctk.CTkFrame(
-    master=app,
-    width=500,
-    height=500,
-    fg_color="#222222")
-cancel_button2 = Ctk.CTkButton(
-    master=createframe2,
-    text="Cancel",
-    command=remove_settings_tab,
-    width=175,
-    height=70,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20))
-createframe2.pack_propagate(False)
-pywinstyles.set_opacity(createblur2, value=0.5, color="#000001")
-
-settingframe2 = Ctk.CTkFrame(
-    master=createframe2,
-    width=490,
-    height=60,
-    fg_color="#111111")
-settingframe2.pack_propagate(False)
-
-label2 = Ctk.CTkLabel(master=settingframe2, text="Multi-Instance")
-
-settingframe2.pack(pady=5)
-
-switch2 = Ctk.CTkSwitch(
-    master=settingframe2,
-    text="",
-    variable=multi_roblox_enabled,
-    command=toggle_multi_roblox)
-switch2.pack(pady=10, padx=10, side="right")
-label2.pack(pady=10, padx=20, side="left")
-
-cancel_button2.pack(pady=20, padx=50, side=Ctk.BOTTOM)
-
-pywinstyles.set_opacity(createblur, value=0.5, color="#000001")
-
-img = Image.open((os.path.join(images_folder, "play.png")))
-img_logo = Ctk.CTkImage(img, size=(50, 50))
-upperframe = Ctk.CTkFrame(
-    master=Tab1Frame,
-    width=700,
-    height=50,
-    fg_color="#111111")
-upperframe.pack(pady=20, padx=20, expand=False)
-label1 = Ctk.CTkLabel(
-    master=upperframe,
-    text="",
-    image=img_logo,
-    width=50,
-    height=50)
-label1.pack(pady=0, padx=0, side="left")
-label = Ctk.CTkLabel(
-    master=upperframe,
-    text="RoForge",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=24))
-label.pack(pady=20, padx=20, side="top")
-label2 = Ctk.CTkFrame(
-    master=Tab1Frame,
-    width=815,
-    height=2,
-    fg_color="#444444")
-label2.pack_propagate(False)
-label2.pack(pady=5, padx=20, side="top", expand=False)
-middleframe = Ctk.CTkFrame(
-    master=Tab1Frame,
-    width=700,
-    height=75,
-    fg_color="#111111")
-middleframe.pack_propagate(False)
-middleframe.pack(pady=10, padx=20, expand=False)
-
-create_start_button = Ctk.CTkButton(
-    master=middleframe,
-    text="+ Create",
-    font=Ctk.CTkFont(
-        family="Impact",
-        size=22),
-    command=create_modpack_tab,
-    fg_color="#111111",
-    hover_color="#000001",
-    width=155,
-    height=50)
-create_start_button.pack(pady=0, padx=0, side=Ctk.LEFT)
-
-create_settings_button = Ctk.CTkButton(
-    master=middleframe,
-    text="⚙ Settings",
-    font=Ctk.CTkFont(
-        family="Impact",
-        size=22),
-    command=create_settings_tab,
-    fg_color="#111111",
-    hover_color="#000001",
-    width=155,
-    height=50)
-create_settings_button.pack(pady=0, padx=0, side=Ctk.LEFT)
-
-modpacks_image_frame = Ctk.CTkScrollableFrame(
-    master=Tab1Frame,
-    width=600,
-    height=605,
-    fg_color="#111111",
-    corner_radius=1)
-modpacks_image_frame.pack(
-    pady=0,
-    padx=10,
-    side=Ctk.TOP,
-    expand=False,
-    fill='both')
-
-Tab2Frame = Ctk.CTkFrame(master=app, width=700, height=780, fg_color="#111111")
-Tab2Frame.pack_propagate(False)
-
-selected_modpack = Ctk.StringVar(value="")
-
-modstop = Ctk.CTkFrame(
-    master=Tab2Frame,
-    width=800,
-    height=150
-)
-
-modstop.pack_propagate(False)
-modstop.pack(pady=20, padx=20)
-
-selected_modpack_icon_label = Ctk.CTkLabel(
-    master=modstop,
-    text="",
-    image=None,
-    width=125,
-    height=125
-)
-
-selected_modpack_icon_label.pack(pady=10, padx=30, side="left")
-
-selected_modpack = Ctk.StringVar(value=f"")
-modpack_menu = Ctk.CTkOptionMenu(master=Tab2Frame, variable=selected_modpack)
-
-
-fflag_editor_button_frame = Ctk.CTkFrame(
-    Tab2Frame,
-    width=660,
-    height=50,
-    fg_color="#111111"
-)
-
-fflag_editor_button_frame.pack_propagate(False)
-fflag_editor_button_frame.pack(pady=0, side="top")
-
-
-upperframe2 = Ctk.CTkFrame(
-    master=modstop,
-    width=475,
-    height=600,
-    fg_color="#222222"
-)
-upperframe2.pack_propagate(False)
-upperframe2.pack(pady=0, padx=1, side="right", expand=False)
-
-upperframe3 = Ctk.CTkFrame(
-    master=upperframe2,
-    width=200,
-    border_width=1,
-    height=600,
-    fg_color="#222222"
-)
-upperframe3.pack_propagate(False)
-upperframe3.pack(pady=10, padx=1, side="right", expand=False)
-
-upperframe34 = Ctk.CTkFrame(
-    master=upperframe2,
-    width=400,
-    height=600,
-    fg_color="#222222"
-)
-upperframe34.pack_propagate(False)
-upperframe34.pack(pady=10, padx=1, side="left", expand=False)
-
-modpack_name_label = Ctk.CTkLabel(
-    master=upperframe34,
-    text="",
-    font=(
-        "Impact", 24
-    ),
-    height=2
-)
-modpack_name_label.pack_propagate(False)
-modpack_name_label.pack(pady=10, side="left")
-
-upperframe4 = Ctk.CTkFrame(
-    master=upperframe3,
-    width=200,
-    height=50,
-    fg_color="#222222"
-)
-upperframe4.pack_propagate(False)
-upperframe4.pack(pady=10, padx=1, side="top", expand=False)
-
-launch_button = Ctk.CTkButton(
-    master=upperframe4,
-    text="▷ Launch",
-    command=launch_modpack,
-    width=110,
-    height=25,
-    fg_color="#222222",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=22)
-)
-launch_button.pack(pady=0, padx=2, side="left")
-
-export_button = Ctk.CTkButton(
-    master=upperframe4,
-    text="📤",
-    command=export_modpack,
-    fg_color="#222222",
-    hover_color="#000001",
-    width=25,
-    height=25,
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=22)
-)
-export_button.pack(pady=0, padx=0, side="left")
-
-cancel_button = Ctk.CTkButton(
-    master=upperframe3,
-    text="❌",
-    command=show_tab1,
-    width=120,
-    height=25,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=22)
-)
-cancel_button.pack(pady=0, padx=5, side="left")
-cancel_button.pack_propagate(False)
-
-mods = Ctk.CTkScrollableFrame(master=Tab2Frame, width=800, height=600)
-mods.pack(pady=20, padx=20)
-
-label3 = Ctk.CTkFrame(
-    master=Tab2Frame,
-    width=400,
-    height=2,
-    fg_color="#555555")
-label3.pack_propagate(False)
-label3.pack(pady=3, padx=1, side="bottom", expand=False)
-
-search_frame = Ctk.CTkFrame(
-    master=fflag_editor_button_frame,
-    width=200,
-    height=200,
-    fg_color="#111111")
-search_frame.pack(pady=0, padx=0, side="left")
-search_frame.pack_propagate(False)
-
-show_mods_button = Ctk.CTkButton(
-    fflag_editor_button_frame,
-    text="Mods",
-    command=lambda: filter_mods("mods"),
-    fg_color="#111111",
-    hover_color="#000001",
-    height=50,
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20)
-)
-show_mods_button.pack(pady=0, padx=5, side="left")
-
-show_texturepacks_button = Ctk.CTkButton(
-    fflag_editor_button_frame,
-    text="Texture Packs",
-    command=lambda: filter_mods("texturepacks"),
-    fg_color="#111111",
-    hover_color="#000001",
-    height=50,
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20)
-)
-show_texturepacks_button.pack(pady=0, padx=5, side="left")
-
-fflag_editor_button = Ctk.CTkButton(
-    fflag_editor_button_frame,
-    text="Fast Flags",
-    command=toggle_fflag_editor,
-    fg_color="#111111",
-    hover_color="#000001",
-    height=50,
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20)
-)
-fflag_editor_button.pack(pady=0, padx=5, side="left")
-
-delete_button = Ctk.CTkButton(
-    master=upperframe4,
-    text="🗑",
-    command=delete_selected_modpack,
-    fg_color="#222222",
-    hover_color="#000001",
-    width=25,
-    height=25,
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=22)
-)
-delete_button.pack(pady=0, side="left")
-
-
-import_button = Ctk.CTkButton(
-    master=middleframe,
-    text="📥 Import",
-    font=Ctk.CTkFont(
-        family="Impact",
-        size=22),
-    command=import_modpack,
-    fg_color="#111111",
-    hover_color="#000001",
-    width=155,
-    height=50
-)
-
-import_button.pack(pady=0, padx=0, side=Ctk.LEFT)
-
-Tab3Frame = Ctk.CTkScrollableFrame(
-    master=app,
-    width=700,
-    height=770,
-    fg_color="#111111"
-)
-
-label = Ctk.CTkLabel(
-    master=Tab3Frame,
-    text="This is Tab 3",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=24)
-)
-
-label.pack(pady=20, padx=20)
-
-import_external_button = Ctk.CTkButton(
-    master=middleframe,
-    text="📥 Import Mod",
-    font=Ctk.CTkFont(
-        family="Impact",
-        size=22),
-    command=import_external_mod,
-    fg_color="#111111",
-    hover_color="#000001",
-    width=155,
-    height=50
-)
-
-import_external_button.pack(pady=0, padx=0, side=Ctk.LEFT)
-
-
-createblur3 = Ctk.CTkFrame(
-    master=app,
-    width=700,
-    height=780,
-    fg_color="#111111")
-
-fflag_editor_frame = Ctk.CTkFrame(
-    master=app,
-    width=600,
-    height=650,
-    fg_color="#111111"
-)
-
-fflag_editor_blur = Ctk.CTkFrame(
-    master=app,
-    width=700,
-    height=702,
-    fg_color="#111111"
-)
-
-fflag_editor_blur.pack_propagate(False)
-fflag_editor_frame.pack_propagate(False)
-
-pywinstyles.set_opacity(fflag_editor_blur, value=0.5, color="#000001")
-
-text_widget = Ctk.CTkTextbox(
-    fflag_editor_frame,
-    wrap="none",
-    width=80,
-    height=20,
-    fg_color="#222222"
-)
-text_widget.pack(side="left", fill="both", expand=True)
-
-scrollbar = Ctk.CTkScrollbar(fflag_editor_frame, command=text_widget.yview)
-scrollbar.pack(side="right", fill="y")
-text_widget.configure(yscrollcommand=scrollbar.set)
-
-label_new3 = Ctk.CTkLabel(
-    master=fflag_editor_frame,
-    text="FastFlags editor",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=20)
-)
-
-label_new3.pack(pady=10, padx=5)
-
-fflag_editor_button2 = Ctk.CTkButton(
-    fflag_editor_frame,
-    text="Cancel",
-    command=toggle_fflag_editor,
-    height=50,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=18)
-)
-
-fflag_editor_button2.pack(pady=10, padx=5)
-
-save_fflags_button = Ctk.CTkButton(
-    fflag_editor_frame,
-    text="Save Fast Flags",
-    command=save_fast_flags,
-    height=50,
-    fg_color="#111111",
-    hover_color="#000001",
-    font=Ctk.CTkFont(
-        family="Impact",
-         size=18)
-)
-
-save_fflags_button.pack(pady=10)
-
-pywinstyles.set_opacity(createblur3, value=0.5, color="#000001")
-
-search_entry = Ctk.CTkEntry(
-    master=search_frame,
-    placeholder_text="Search mods...",
-    placeholder_text_color="#292929",
-    width=400,
-    height=200,
-    fg_color="#171717",
-    border_color="#191919",
-    font=Ctk.CTkFont(
-        family="Impact",
-        size=20)
-)
-
-search_entry.pack(side="left", padx=10)
-
-update_button = Ctk.CTkButton(
-    master=upperframe3,
-    text="🔄",
-    command=lambda: update_modpack(),
-    fg_color="#222222",
-    hover_color="#000001",
-    width=60,
-    height=25,
-    font=Ctk.CTkFont(family="Impact", size=20)
-)
-update_button.pack(pady=0, padx=5, side="right")
-
-'''Ui code ends here lol'''
-
-'''): I don't think this launcher is getting at least 1 download soon'''
-
-x_max = 4
-y_max = 4
-
-
-global x, y
-x = 0
-y = 0
-
-for modpack in modpacks:
-    image_path = os.path.join(modpacks_dir, modpack, "image.png")
-
-    image = Ctk.CTkImage(light_image=Image.open(image_path), size=(145, 145))
-
-    button = Ctk.CTkButton(
-        master=modpacks_image_frame,
-        text=modpack,
-        image=image,
-        compound="top",
-        command=lambda m=modpack: select_modpack(m),
-        fg_color="#222222",
-        hover_color="#000001",
-        width=100,
-        height=200)
-    button.grid(row=y, column=x, pady=2, padx=2)
-
-    button.photo = image
-
-    if x < 3:
-        x += 1
-    else:
-        x = 0
-        y += 1
-    print(x, y)
-
-
-'''Mods!'''
-
-def add_mod_switch(mod_name, mod_function, icon_path):
-
-    if mod_name in mod_states:
-        logging.debug(f"Removing existing mod switch for {mod_name}")
-        del mod_states[mod_name]
-
-    mod_state = Ctk.BooleanVar(value=False)
-    mod_states[mod_name] = mod_state
-
-    modframe = Ctk.CTkFrame(
-        master=mods,
-        width=800,
-        height=80,
-        fg_color="#111111")
-    modframe.pack_propagate(False)
-
-    try:
-        icon_image = Ctk.CTkImage(
-            light_image=Image.open(icon_path), size=(
-                50, 50))
-    except Exception as e:
-        logging.warning(
-            f"Failed to load icon {icon_path} for {mod_name}: {str(e)}")
-        icon_image = Ctk.CTkImage(
-            light_image=Image.open(
-                os.path.join(
-                    images_folder, "play.png")), size=(
-                50, 50))
-
-    icon_label = Ctk.CTkLabel(master=modframe, image=icon_image, text="")
-    icon_label.pack(pady=10, padx=10, side="left")
-
-    switch = Ctk.CTkSwitch(
-        master=modframe,
-        text="",
-        variable=mod_state,
-        command=lambda: mod_function(
-            mod_state.get()))
-    switch.pack(pady=10, padx=10, side="right")
-    text = Ctk.CTkLabel(master=modframe, text=mod_name)
-    text.pack(pady=10, padx=10, side="left")
-    modframe.pack(pady=10, padx=10)
-
-    icon_label.image = icon_image
-    logging.debug(
-        f"Added mod switch for {mod_name} with initial state {mod_state.get()}")
+    # Use QTimer instead of app.after since we're not in a QApplication context
+    timer = QTimer()
+    timer.timeout.connect(lambda: check_external_mod_queue(loading_window, result_queue))
+    timer.start(100)
 
 
 def apply_day_night_cycle(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2427,33 +1199,8 @@ def apply_day_night_cycle(enabled):
     with open(mod_state_path, "w") as f:
         json.dump(mod_state, f)
 
-
-def close_file_handles(file_path):
-    """Close any open handles to the specified file."""
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    INVALID_HANDLE_VALUE = -1
-    FILE_SHARE_READ = 0x00000001
-    FILE_SHARE_WRITE = 0x00000002
-    OPEN_EXISTING = 3
-    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-
-    handle = kernel32.CreateFileW(
-        file_path,
-        0,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS,
-        None)
-    if handle == INVALID_HANDLE_VALUE:
-
-        return
-
-    kernel32.CloseHandle(handle)
-
-
 def replace_font(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2510,7 +1257,7 @@ def replace_font(enabled):
 
 
 def apply_optimizer(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2558,7 +1305,7 @@ def apply_optimizer(enabled):
 
 
 def apply_remove_grass_mesh(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2606,7 +1353,7 @@ def apply_remove_grass_mesh(enabled):
 
 
 def apply_hide_gui(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2653,7 +1400,7 @@ def apply_hide_gui(enabled):
 
 
 def apply_display_fps(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2694,7 +1441,7 @@ def apply_display_fps(enabled):
 
 
 def apply_cheat(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2743,7 +1490,7 @@ def apply_cheat(enabled):
 
 
 def disable_remotes(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2784,7 +1531,7 @@ def disable_remotes(enabled):
 
 
 def google_browser(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2837,7 +1584,7 @@ def google_browser(enabled):
 
 
 def replace_character_meshes(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2891,7 +1638,7 @@ def replace_character_meshes(enabled):
 
 
 def chat_gpt(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2944,7 +1691,7 @@ def chat_gpt(enabled):
 
 
 def faster_inputs(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -2985,7 +1732,7 @@ def faster_inputs(enabled):
 
 
 def unlock_fps(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -3028,7 +1775,7 @@ def unlock_fps(enabled):
 
 
 def graphic_boost(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -3091,7 +1838,7 @@ def graphic_boost(enabled):
 
 
 def apply_custom_ouch_sound(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -3147,7 +1894,7 @@ def apply_custom_ouch_sound(enabled):
 
 
 def beautiful_sky(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -3271,7 +2018,7 @@ def beautiful_sky(enabled):
 
 
 def anime_chan_sky(enabled):
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Please select a modpack.")
         return
@@ -3399,7 +2146,7 @@ def anime_chan_sky(enabled):
 
 def apply_bloxstrap_theme(enabled):
     """Applies or removes the Bloxstrap theme to the selected modpack."""
-    modpack = selected_modpack.get()
+    modpack = selected_modpack
     if not modpack:
         print("Error: Please select a modpack first.")
 
@@ -3584,178 +2331,1541 @@ def apply_bloxstrap_theme(enabled):
         print(f"\nAn unexpected error occurred during theme operation: {e}")
 
 
-def update_mod_state(modpack_path, key, value):
-    mod_state_path = os.path.join(modpack_path, "mod_state.json")
-    mod_state = {}
-    try:
+mod_apply_functions = {
+            "replace_font": replace_font,
+            "optimizer": apply_optimizer,
+            "cheat": apply_cheat,
+            "celestials": apply_day_night_cycle,
+            "hidegui": apply_hide_gui,
+            "remove_grass_mesh": apply_remove_grass_mesh,
+            "displayfps": apply_display_fps,
+            "disable_remotes": disable_remotes,
+            "unlock_fps": unlock_fps,
+            "custom_ouch_sound": apply_custom_ouch_sound,
+            "google_browser": google_browser,
+            "chat_gpt": chat_gpt,
+            "character_meshes": replace_character_meshes,
+            "faster_inputs": faster_inputs,
+            "graphic_boost": graphic_boost,
+            "beautiful_sky": beautiful_sky,
+            "anime_chan_sky": anime_chan_sky,
+            "bloxstrap_theme": apply_bloxstrap_theme
+}
+
+class LoadingDialog(QDialog):
+    def __init__(self, parent=None, message="Loading..."):
+        super().__init__(parent)
+        self.setWindowTitle("Loading")
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setFixedSize(300, 100)
+
+        layout = QVBoxLayout()
+        self.label = QLabel(message)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)  # Indeterminate mode
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.progress)
+        self.setLayout(layout)
+
+    def update_message(self, message):
+        self.label.setText(message)
+        QApplication.processEvents()
+
+
+class ModSwitch(QFrame):
+    def __init__(self, mod_name, icon_path, toggle_callback, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(80)
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #2a2a2a;
+            }
+        """)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(10, 5, 10, 5)
+
+        # Icon
+        self.icon_label = QLabel()
+        self.icon_label.setFixedSize(50, 50)
+        self.set_icon(icon_path)
+        layout.addWidget(self.icon_label)
+
+        # Mod name
+        self.name_label = QLabel(mod_name)
+        self.name_label.setStyleSheet("font-size: 14px; color: white;")
+        layout.addWidget(self.name_label)
+
+        # Spacer
+        layout.addStretch()
+
+        # Toggle switch
+        self.toggle = QCheckBox()
+        self.toggle.setStyleSheet("""
+            QCheckBox {
+                background-color: transparent;
+            }
+            
+            QCheckBox::indicator {
+                width: 50px;
+                height: 25px;
+            }
+            QCheckBox::indicator:checked {
+                image: url(:/checked);
+                background-color: #4CAF50;
+                border-radius: 12px;
+            }
+            QCheckBox::indicator:unchecked {
+                image: url(:/unchecked);
+                background-color: #555555;
+                border-radius: 12px;
+            }
+        """)
+        self.toggle.stateChanged.connect(toggle_callback)
+        layout.addWidget(self.toggle)
+
+        self.setLayout(layout)
+
+    def set_icon(self, icon_path):
+        try:
+            img = Image.open(icon_path)
+            img = img.resize((50, 50))
+            img.save("temp_icon.png")  # Save temporarily
+            pixmap = QPixmap("temp_icon.png")
+            os.remove("temp_icon.png")
+            self.icon_label.setPixmap(pixmap)
+        except:
+            # Fallback icon
+            pixmap = QPixmap(50, 50)
+            pixmap.fill(QColor(100, 100, 100))
+            self.icon_label.setPixmap(pixmap)
+
+
+class ModpackCard(QFrame):
+    def __init__(self, modpack_name, icon_path, click_callback, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(160, 180)
+
+        # Default style will be set by theme
+        self.setStyleSheet("""
+            ModpackCard {
+                border: 1px solid;
+                border-radius: 5px;
+            }
+            ModpackCard QLabel {
+                border: none !important;
+                background: none !important;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Icon
+        self.icon_label = QLabel()
+        self.icon_label.setFixedSize(140, 140)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_icon(icon_path)
+        layout.addWidget(self.icon_label)
+
+        # Modpack name
+        self.name_label = QLabel(modpack_name)
+        self.name_label.setStyleSheet("font-size: 14px;")
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.name_label)
+
+        self.setLayout(layout)
+
+        # Connect click event
+        self.mousePressEvent = lambda e: click_callback(modpack_name)
+
+    def set_icon(self, icon_path):
+        try:
+            img = Image.open(icon_path)
+            img = img.resize((140, 140))
+            img.save("temp_modpack_icon.png")  # Save temporarily
+            pixmap = QPixmap("temp_modpack_icon.png")
+            os.remove("temp_modpack_icon.png")
+            self.icon_label.setPixmap(pixmap)
+        except:
+            # Fallback icon
+            pixmap = QPixmap(140, 140)
+            pixmap.fill(QColor(100, 100, 100))
+            self.icon_label.setPixmap(pixmap)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("RoForge")
+        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(1000, 700)
+
+        default_font = QFont("Roboto", 10)
+        QApplication.setFont(default_font)
+
+        # Load fonts
+        QFontDatabase.addApplicationFont("assets/fonts/Roboto-Regular.ttf")
+        QFontDatabase.addApplicationFont("assets/fonts/Roboto-Bold.ttf")
+
+        # Central widget
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        # Main layout
+        self.main_layout = QHBoxLayout()
+        self.central_widget.setLayout(self.main_layout)
+
+        # Sidebar
+        self.sidebar = QFrame()
+        self.sidebar.setFixedWidth(200)
+        self.sidebar.setStyleSheet("background-color: #1a1a1a;")
+        self.sidebar_layout = QVBoxLayout()
+        self.sidebar_layout.setContentsMargins(0, 20, 0, 20)
+        self.sidebar_layout.setSpacing(10)
+
+        logo_container = QWidget()
+        logo_layout = QHBoxLayout()
+        logo_layout.setContentsMargins(0, 0, 0, 0)
+        logo_layout.setSpacing(10)  # This creates the 10px gap between text and logo
+
+        # Create a container for the text+logo pair to center them
+        center_container = QWidget()
+        center_layout = QHBoxLayout()
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(10)  # Maintain 10px gap
+
+        logo_text = QLabel("RoForge")
+        logo_text.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+
+        # Logo image
+        self.logo_img = QLabel()
+        self.logo_img.setFixedSize(24, 24)
+        self.set_logo_image("assets/images/play.png")
+
+        # Add text and logo to the center layout
+        center_layout.addWidget(logo_text)
+        center_layout.addWidget(self.logo_img)
+
+        # Add stretch to both sides to center the pair
+        logo_layout.addStretch()
+        logo_layout.addLayout(center_layout)
+        logo_layout.addStretch()
+
+        logo_container.setLayout(logo_layout)
+        self.sidebar_layout.addWidget(logo_container)
+
+        # Navigation buttons
+        self.btn_modpacks = QPushButton("Modpacks")
+        self.btn_mods = QPushButton("Mods")
+        self.btn_settings = QPushButton("Settings")
+
+        for btn in [self.btn_modpacks, self.btn_mods, self.btn_settings]:
+            btn.setFixedHeight(50)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: white;
+                    font-size: 16px;
+                    text-align: left;
+                    padding-left: 20px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #2a2a2a;
+                }
+                QPushButton:pressed {
+                    background-color: #3a3a3a;
+                }
+            """)
+            self.sidebar_layout.addWidget(btn)
+
+        self.sidebar_layout.addStretch()
+        self.sidebar.setLayout(self.sidebar_layout)
+        self.main_layout.addWidget(self.sidebar)
+
+        # Main content area
+        self.content_area = QFrame()
+        self.content_area.setStyleSheet("background-color: #222222;")
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Stacked widget for pages
+        self.stacked_widget = QStackedWidget()
+
+        # Modpacks page
+        self.modpacks_page = QWidget()
+        self.setup_modpacks_page()
+        self.stacked_widget.addWidget(self.modpacks_page)
+
+        # Mods page
+        self.mods_page = QWidget()
+        self.setup_mods_page()
+        self.stacked_widget.addWidget(self.mods_page)
+
+        # Settings page
+        self.settings_page = QWidget()
+        self.setup_settings_page()
+        self.stacked_widget.addWidget(self.settings_page)
+
+        self.content_layout.addWidget(self.stacked_widget)
+        self.content_area.setLayout(self.content_layout)
+        self.main_layout.addWidget(self.content_area)
+
+        # Connect signals
+        self.btn_modpacks.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
+        self.btn_mods.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
+        self.btn_settings.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
+
+        # Initialize modpacks
+        self.modpacks_dir = os.path.join(os.path.dirname(__file__), "ModPacks")
+        if not os.path.exists(self.modpacks_dir):
+            os.makedirs(self.modpacks_dir)
+        self.modpacks = [f for f in os.listdir(self.modpacks_dir) if os.path.isdir(os.path.join(self.modpacks_dir, f))]
+        global selected_modpack
+        self.selected_modpack = None
+        selected_modpack = self.selected_modpack
+        self.update_modpacks_display()
+
+        # Initialize mod states
+        self.mod_states = {}
+
+    def set_logo_image(self, icon_path):
+        try:
+            img = Image.open(icon_path)
+            img = img.resize((24, 24))  # Match the size set above
+            img.save("temp_logo.png")  # Save temporarily
+            pixmap = QPixmap("temp_logo.png")
+            os.remove("temp_logo.png")
+            self.logo_img.setPixmap(pixmap)
+        except Exception as e:
+            print(f"Error loading logo: {str(e)}")
+            # Fallback icon
+            pixmap = QPixmap(32, 32)
+            pixmap.fill(QColor(100, 100, 100))
+            self.logo_img.setPixmap(pixmap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'modpacks'):
+            self.update_modpacks_display()
+
+    def setup_modpacks_page(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Top bar
+        top_bar = QFrame()
+        top_bar.setFixedHeight(60)
+        top_bar.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        top_bar_layout = QHBoxLayout()
+        top_bar_layout.setContentsMargins(20, 0, 20, 0)
+
+        title = QLabel("Modpacks")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+
+        self.btn_create_modpack = QPushButton("Create Modpack ➕")
+        self.btn_import_modpack = QPushButton("Import Modpack 📥")
+
+        for btn in [self.btn_create_modpack, self.btn_import_modpack]:
+            btn.setFixedHeight(40)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 15px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+            """)
+
+        top_bar_layout.addWidget(title)
+        top_bar_layout.addStretch()
+        top_bar_layout.addWidget(self.btn_create_modpack)
+        top_bar_layout.addWidget(self.btn_import_modpack)
+        top_bar.setLayout(top_bar_layout)
+        layout.addWidget(top_bar)
+
+        # Modpacks grid
+        self.modpacks_scroll = QScrollArea()
+        self.modpacks_scroll.setWidgetResizable(True)
+        self.modpacks_scroll.setStyleSheet("border: none;")
+
+        self.modpacks_container = QWidget()
+        self.modpacks_grid = QGridLayout()
+        self.modpacks_grid.setSpacing(20)
+        self.modpacks_grid.setContentsMargins(20, 20, 20, 20)
+
+        self.modpacks_container.setLayout(self.modpacks_grid)
+        self.modpacks_scroll.setWidget(self.modpacks_container)
+        layout.addWidget(self.modpacks_scroll)
+
+        # Connect signals
+        self.btn_create_modpack.clicked.connect(self.show_create_modpack_dialog)
+        self.btn_import_modpack.clicked.connect(self.import_modpack)
+
+        self.modpacks_page.setLayout(layout)
+
+    def setup_mods_page(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Top bar with modpack info
+        self.top_bar_mods = QFrame()
+        self.top_bar_mods.setFixedHeight(100)
+        self.top_bar_mods.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        self.top_bar_mods_layout = QHBoxLayout()
+        self.top_bar_mods_layout.setContentsMargins(20, 0, 20, 0)
+
+        # Modpack icon
+        self.modpack_icon = QLabel()
+        self.modpack_icon.setFixedSize(80, 80)
+        self.modpack_icon.setStyleSheet("background-color: #333333; border-radius: 5px;")
+
+        # Modpack info
+        self.modpack_info = QFrame()
+        self.modpack_info_layout = QVBoxLayout()
+        self.modpack_info_layout.setContentsMargins(10, 0, 0, 0)
+
+        self.modpack_name = QLabel("No modpack selected")
+        self.modpack_name.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
+
+        self.modpack_actions = QFrame()
+        self.modpack_actions_layout = QHBoxLayout()
+        self.modpack_actions_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.btn_launch = QPushButton("Launch ▶️")
+        self.btn_update = QPushButton("Update 🔄")
+        self.btn_export = QPushButton("Export 📤")
+        self.btn_delete = QPushButton("Delete ❌")
+
+        for btn in [self.btn_launch, self.btn_update, self.btn_export, self.btn_delete]:
+            btn.setFixedHeight(30)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 10px;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+            """)
+            self.modpack_actions_layout.addWidget(btn)
+
+        self.modpack_actions.setLayout(self.modpack_actions_layout)
+
+        self.modpack_info_layout.addWidget(self.modpack_name)
+        self.modpack_info_layout.addWidget(self.modpack_actions)
+        self.modpack_info.setLayout(self.modpack_info_layout)
+
+        # Spacer
+        spacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.top_bar_mods_layout.addWidget(self.modpack_icon)
+        self.top_bar_mods_layout.addWidget(self.modpack_info)
+        self.top_bar_mods_layout.addItem(spacer)
+        self.top_bar_mods.setLayout(self.top_bar_mods_layout)
+        layout.addWidget(self.top_bar_mods)
+
+        # Mod filter bar
+        filter_bar = QFrame()
+        filter_bar.setFixedHeight(60)
+        filter_bar.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        filter_bar_layout = QHBoxLayout()
+        filter_bar_layout.setContentsMargins(20, 0, 20, 0)
+
+
+        self.btn_manage_mods = QPushButton("Manage External Mods")
+        self.btn_manage_mods.setFixedHeight(40)
+        self.btn_manage_mods.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        self.btn_manage_mods.clicked.connect(show_external_mod_manager)
+        filter_bar_layout.addWidget(self.btn_manage_mods)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search mods...")
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #333333;
+                color: white;
+                border: 1px solid #444444;
+                border-radius: 5px;
+                padding: 5px 10px;
+                font-size: 14px;
+            }
+        """)
+
+        self.btn_show_mods = QPushButton("Mods")
+        self.btn_show_texturepacks = QPushButton("Texture Packs")
+        self.btn_fflags = QPushButton("Fast Flags")
+
+        for btn in [self.btn_show_mods, self.btn_show_texturepacks, self.btn_fflags]:
+            btn.setFixedHeight(40)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 15px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+            """)
+
+        filter_bar_layout.addWidget(self.search_input)
+        filter_bar_layout.addWidget(self.btn_show_mods)
+        filter_bar_layout.addWidget(self.btn_show_texturepacks)
+        filter_bar_layout.addWidget(self.btn_fflags)
+        filter_bar.setLayout(filter_bar_layout)
+        layout.addWidget(filter_bar)
+
+        # Mods list
+        self.mods_scroll = QScrollArea()
+        self.mods_scroll.setWidgetResizable(True)
+        self.mods_scroll.setStyleSheet("border: none;")
+
+        self.mods_container = QWidget()
+        self.mods_layout = QVBoxLayout()
+        self.mods_layout.setSpacing(10)
+        self.mods_layout.setContentsMargins(0, 10, 0, 10)
+
+        self.mods_container.setLayout(self.mods_layout)
+        self.mods_scroll.setWidget(self.mods_container)
+        layout.addWidget(self.mods_scroll)
+
+        # Connect signals
+        self.btn_launch.clicked.connect(self.launch_modpack)
+        self.btn_update.clicked.connect(self.update_modpack)
+        self.btn_export.clicked.connect(self.export_modpack)
+        self.btn_delete.clicked.connect(self.delete_modpack)
+        self.btn_show_mods.clicked.connect(lambda: self.filter_mods("mods"))
+        self.btn_show_texturepacks.clicked.connect(lambda: self.filter_mods("texturepacks"))
+        self.btn_fflags.clicked.connect(self.show_fflag_editor)
+        self.search_input.textChanged.connect(self.filter_mods_by_search)
+
+        self.mods_page.setLayout(layout)
+
+    def setup_settings_page(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Settings content
+        settings_content = QFrame()
+        settings_content.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        settings_layout = QVBoxLayout()
+        settings_layout.setContentsMargins(20, 20, 20, 20)
+
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        settings_layout.addWidget(title)
+
+        # Multi-instance setting
+        multi_instance_frame = QFrame()
+        multi_instance_frame.setStyleSheet("background-color: #333333; border-radius: 5px;")
+        multi_instance_layout = QHBoxLayout()
+        multi_instance_layout.setContentsMargins(15, 10, 15, 10)
+
+        multi_instance_label = QLabel("Enable Multi-Instance")
+        multi_instance_label.setStyleSheet("font-size: 14px; color: white;")
+
+        self.multi_instance_toggle = QCheckBox()
+        self.multi_instance_toggle.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 50px;
+                height: 25px;
+            }
+            QCheckBox::indicator:checked {
+                image: url(:/checked);
+                background-color: #4CAF50;
+                border-radius: 12px;
+            }
+            QCheckBox::indicator:unchecked {
+                image: url(:/unchecked);
+                background-color: #555555;
+                border-radius: 12px;
+            }
+        """)
+
+        multi_instance_layout.addWidget(multi_instance_label)
+        multi_instance_layout.addStretch()
+        multi_instance_layout.addWidget(self.multi_instance_toggle)
+        multi_instance_frame.setLayout(multi_instance_layout)
+        settings_layout.addWidget(multi_instance_frame)
+
+        settings_layout.addStretch()
+        settings_content.setLayout(settings_layout)
+        layout.addWidget(settings_content)
+
+        self.settings_page.setLayout(layout)
+
+        # Connect signals
+        self.multi_instance_toggle.stateChanged.connect(self.toggle_multi_roblox)
+
+    def update_modpacks_display(self):
+        # Clear existing modpacks
+        for i in reversed(range(self.modpacks_grid.count())):
+            widget = self.modpacks_grid.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        # Calculate number of columns based on window width
+        window_width = self.width()
+        card_width = 180  # Width of each modpack card
+        spacing = 20  # Spacing between cards
+        max_cols = max(2, window_width // (card_width + spacing))
+
+        # Add modpacks in a grid
+        row, col = 0, 0
+
+        for modpack in self.modpacks:
+            icon_path = os.path.join(self.modpacks_dir, modpack, "image.png")
+            if not os.path.exists(icon_path):
+                icon_path = os.path.join("assets", "images", "play.png")
+
+            card = ModpackCard(modpack, icon_path, self.select_modpack)
+            card.setFixedSize(160, 180)  # Set fixed size for consistency
+
+            # Add card to grid
+            self.modpacks_grid.addWidget(card, row, col)
+
+            # Update grid position
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
+
+        # Add stretch to fill remaining space
+        self.modpacks_grid.setRowStretch(row + 1, 1)
+        for c in range(max_cols):
+            self.modpacks_grid.setColumnStretch(c, 1)
+
+    def select_modpack(self, modpack_name):
+        self.selected_modpack = modpack_name
+        global selected_modpack
+        selected_modpack = self.selected_modpack
+
+        self.modpack_name.setText(modpack_name)
+
+        # Load modpack icon
+        icon_path = os.path.join(self.modpacks_dir, modpack_name, "image.png")
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            img = img.resize((80, 80))
+            img.save("temp_modpack_icon.png")
+            pixmap = QPixmap("temp_modpack_icon.png")
+            os.remove("temp_modpack_icon.png")
+            self.modpack_icon.setPixmap(pixmap)
+        else:
+            self.modpack_icon.setPixmap(QPixmap(80, 80))
+
+        # Switch to mods page
+        self.stacked_widget.setCurrentIndex(1)
+
+        # Load mod states
+        self.load_mod_states(modpack_name)
+
+    def load_mod_states(self, modpack_name):
+        # Clear existing mods
+        for i in reversed(range(self.mods_layout.count())):
+            self.mods_layout.itemAt(i).widget().setParent(None)
+
+        mod_state_path = os.path.join(self.modpacks_dir, modpack_name, "mod_state.json")
+        if not os.path.exists(mod_state_path):
+            return
+
+        with open(mod_state_path, "r") as f:
+            mod_state = json.load(f)
+
+        # Add internal mods
+        internal_mods = [
+            ("R63 avatar", replace_character_meshes, os.path.join("assets", "images", "girl.jpg")),
+            ("Faster inputs", faster_inputs, os.path.join("assets", "images", "keyboard.png")),
+            ("Replace Font", replace_font, os.path.join("assets", "images", "Replace Font.png")),
+            ("Optimizer", apply_optimizer, os.path.join("assets", "images", "Optimizer.png")),
+            ("Cheat", apply_cheat, os.path.join("assets", "images", "cheat.png")),
+            ("Change celestial bodies", apply_day_night_cycle, os.path.join("assets", "images", "moon.jpg")),
+            ("Hide gui", apply_hide_gui, os.path.join("assets", "images", "hide.png")),
+            ("Remove grass", apply_remove_grass_mesh, os.path.join("assets", "images", "grass.png")),
+            ("Display fps", apply_display_fps, os.path.join("assets", "images", "displayfps.png")),
+            ("Disable remotes", disable_remotes, os.path.join("assets", "images", "RemoteEvent.png")),
+            ("Unlock fps", unlock_fps, os.path.join("assets", "images", "unlock_fps.png")),
+            ("Custom death sound", apply_custom_ouch_sound, os.path.join("assets", "images", "noob.png")),
+            ("Google browser", google_browser, os.path.join("assets", "images", "google.png")),
+            ("Chat gpt", chat_gpt, os.path.join("assets", "images", "ChatGPT_logo.svg.png")),
+            ("Graphic boost", graphic_boost, os.path.join("assets", "images", "graphics.png")),
+            ("Beautiful sky", beautiful_sky, os.path.join("assets", "images", "beautiful.png")),
+            ("Anime chan sky", anime_chan_sky, os.path.join("assets", "images", "Chan.png")),
+            ("Bloxstrap Theme", apply_bloxstrap_theme, os.path.join("assets", "images", "bloxstrap.png")),
+        ]
+
+        for mod_name, mod_function, icon_path in internal_mods:
+            internal_name = MOD_NAME_MAPPING.get(mod_name, mod_name.lower().replace(' ', '_'))
+            enabled = mod_state.get(internal_name, False)
+
+            mod_switch = ModSwitch(
+                mod_name,
+                icon_path,
+                lambda state, m=mod_name, f=mod_function: self.toggle_mod(m, f, state)
+            )
+            mod_switch.toggle.setChecked(enabled)
+            self.mods_layout.addWidget(mod_switch)
+
+        # Add external mods
+        external_mods = load_external_mods()
+        for internal_name, mod_info in external_mods.items():
+            if not validate_external_mod_entry(internal_name, mod_info):
+                continue
+
+            mod_name = mod_info["name"]
+            icon_path = mod_info["icon_path"]
+            enabled = mod_state.get(internal_name, False)
+
+            with open(mod_info["config_path"], "r") as f:
+                mod_config = json.load(f)
+
+            mod_switch = ModSwitch(
+                mod_name,
+                icon_path,
+                lambda state, iname=internal_name, config=mod_config: self.toggle_external_mod(iname, config, state)
+            )
+            mod_switch.toggle.setChecked(enabled)
+            self.mods_layout.addWidget(mod_switch)
+
+        # Apply initial filter
+        self.filter_mods(current_filter)
+
+    def toggle_mod(self, mod_name, mod_function, state):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        mod_state_path = os.path.join(self.modpacks_dir, self.selected_modpack, "mod_state.json")
+        mod_state = {}
         if os.path.exists(mod_state_path):
             with open(mod_state_path, "r") as f:
                 mod_state = json.load(f)
-    except Exception as e:
-        print(f"Warning: Could not read mod state file {mod_state_path}: {e}")
 
-    mod_state[key] = value
+        internal_name = MOD_NAME_MAPPING.get(mod_name, mod_name.lower().replace(' ', '_'))
 
-    try:
-        with open(mod_state_path, "w") as f:
-            json.dump(mod_state, f, indent=4)
-        print(f"Updated mod state '{key}' to '{value}' in {mod_state_path}")
-    except Exception as e:
-        print(f"Error writing mod state file {mod_state_path}: {e}")
+        # Only apply if state has changed
+        if internal_name in mod_state and mod_state[internal_name] == state:
+            return
 
+        try:
+            mod_function(state)
 
-add_mod_switch(
-    "R63 avatar",
-    replace_character_meshes,
-    os.path.join(
-        images_folder,
-        "girl.jpg"))
-add_mod_switch(
-    "Faster inputs",
-    faster_inputs,
-    os.path.join(
-        images_folder,
-        "keyboard.png"))
-add_mod_switch(
-    "Replace Font",
-    replace_font,
-    os.path.join(
-        images_folder,
-        "Replace Font.png"))
-add_mod_switch(
-    "Optimizer",
-    apply_optimizer,
-    os.path.join(
-        images_folder,
-        "Optimizer.png"))
-add_mod_switch("Cheat", apply_cheat, os.path.join(images_folder, "cheat.png"))
-add_mod_switch(
-    "Change celestial bodies",
-    apply_day_night_cycle,
-    os.path.join(
-        images_folder,
-        "moon.jpg"))
-add_mod_switch(
-    "Hide gui",
-    apply_hide_gui,
-    os.path.join(
-        images_folder,
-        "hide.png"))
-add_mod_switch(
-    "Remove grass",
-    apply_remove_grass_mesh,
-    os.path.join(
-        images_folder,
-        "grass.png"))
-add_mod_switch(
-    "Display fps",
-    apply_display_fps,
-    os.path.join(
-        images_folder,
-        "displayfps.png"))
-add_mod_switch(
-    "Disable remotes",
-    disable_remotes,
-    os.path.join(
-        images_folder,
-        "RemoteEvent.png"))
-add_mod_switch(
-    "Unlock fps",
-    unlock_fps,
-    os.path.join(
-        images_folder,
-        "unlock_fps.png"))
-add_mod_switch(
-    "Custom death sound",
-    apply_custom_ouch_sound,
-    os.path.join(
-        images_folder,
-        "noob.png"))
-add_mod_switch(
-    "Google browser",
-    google_browser,
-    os.path.join(
-        images_folder,
-        "google.png"))
-add_mod_switch(
-    "Chat gpt",
-    chat_gpt,
-    os.path.join(
-        images_folder,
-        "ChatGPT_logo.svg.png"))
-add_mod_switch(
-    "Graphic boost",
-    graphic_boost,
-    os.path.join(
-        images_folder,
-        "graphics.png"))
-add_mod_switch(
-    "Beautiful sky",
-    beautiful_sky,
-    os.path.join(
-        images_folder,
-        "beautiful.png"))
-add_mod_switch(
-    "Anime chan sky",
-    anime_chan_sky,
-    os.path.join(
-        images_folder,
-        "Chan.png"))
-add_mod_switch(
-    "Bloxstrap Theme",
-    apply_bloxstrap_theme,
-    os.path.join(
-        images_folder,
-        "bloxstrap.png"))
+            # Update mod state
+            mod_state[internal_name] = state
+            with open(mod_state_path, "w") as f:
+                json.dump(mod_state, f, indent=4)
 
+            # Handle conflicts
+            if state and mod_name in CONFLICTING_MODS:
+                self.handle_mod_conflicts(mod_name)
 
-def filter_mods_by_search(search_term):
-    search_term = search_term.lower()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to toggle mod: {str(e)}")
 
-    for child in mods.winfo_children():
-        if isinstance(child, Ctk.CTkFrame):
-            mod_name = ""
-            for widget in child.winfo_children():
-                if isinstance(widget, Ctk.CTkLabel) and widget.cget("text"):
-                    mod_name = widget.cget("text")
-                    break
+    def toggle_external_mod(self, internal_name, mod_config, state):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
 
-            matches_filter = (
-                (current_filter == "mods" and mod_name not in texture_packs) or (
-                    current_filter == "texturepacks" and mod_name in texture_packs))
-            matches_search = search_term in mod_name.lower()
+        mod_state_path = os.path.join(self.modpacks_dir, self.selected_modpack, "mod_state.json")
+        mod_state = {}
+        if os.path.exists(mod_state_path):
+            with open(mod_state_path, "r") as f:
+                mod_state = json.load(f)
 
-            if matches_filter and matches_search:
-                child.pack(pady=10, padx=10)
-            else:
-                child.pack_forget()
+        # Only apply if state has changed
+        if internal_name in mod_state and mod_state[internal_name] == state:
+            return
 
+        try:
+            apply_external_mod(self.selected_modpack, internal_name, mod_config, state)
 
-search_entry.bind(
-    "<KeyRelease>",
-    lambda event: filter_mods_by_search(
-        search_entry.get()))
+            # Update mod state
+            mod_state[internal_name] = state
+            with open(mod_state_path, "w") as f:
+                json.dump(mod_state, f, indent=4)
 
-mod_apply_functions = {
-    "replace_font": replace_font,
-    "optimizer": apply_optimizer,
-    "cheat": apply_cheat,
-    "celestials": apply_day_night_cycle,
-    "hidegui": apply_hide_gui,
-    "remove_grass_mesh": apply_remove_grass_mesh,
-    "displayfps": apply_display_fps,
-    "disable_remotes": disable_remotes,
-    "unlock_fps": unlock_fps,
-    "custom_ouch_sound": apply_custom_ouch_sound,
-    "google_browser": google_browser,
-    "chat_gpt": chat_gpt,
-    "character_meshes": replace_character_meshes,
-    "faster_inputs": faster_inputs,
-    "graphic_boost": graphic_boost,
-    "beautiful_sky": beautiful_sky,
-    "anime_chan_sky": anime_chan_sky,
-}
+            # Handle conflicts
+            if state and mod_config.get("name") in CONFLICTING_MODS:
+                self.handle_mod_conflicts(mod_config.get("name"))
 
-show_tab("Tab1")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to toggle mod: {str(e)}")
 
-app.mainloop()
+    def handle_mod_conflicts(self, activated_display_name):
+        if not self.selected_modpack or activated_display_name not in CONFLICTING_MODS:
+            return
+
+        mod_state_path = os.path.join(self.modpacks_dir, self.selected_modpack, "mod_state.json")
+        if not os.path.exists(mod_state_path):
+            return
+
+        with open(mod_state_path, "r") as f:
+            mod_state = json.load(f)
+
+        changed = False
+        for conflicting_display_name in CONFLICTING_MODS[activated_display_name]:
+            internal_key = MOD_NAME_MAPPING.get(conflicting_display_name)
+            if not internal_key:
+                continue
+
+            if internal_key in mod_state and mod_state[internal_key]:
+                mod_state[internal_key] = False
+                changed = True
+
+                # Update the UI
+                for i in range(self.mods_layout.count()):
+                    widget = self.mods_layout.itemAt(i).widget()
+                    if isinstance(widget, ModSwitch) and widget.name_label.text() == conflicting_display_name:
+                        widget.toggle.setChecked(False)
+                        break
+
+        if changed:
+            with open(mod_state_path, "w") as f:
+                json.dump(mod_state, f, indent=4)
+
+    def filter_mods(self, filter_type):
+        global current_filter
+        current_filter = filter_type
+
+        for i in range(self.mods_layout.count()):
+            widget = self.mods_layout.itemAt(i).widget()
+            if isinstance(widget, ModSwitch):
+                mod_name = widget.name_label.text()
+                matches_filter = (
+                        (filter_type == "mods" and mod_name not in texture_packs) or
+                        (filter_type == "texturepacks" and mod_name in texture_packs)
+                )
+                widget.setVisible(matches_filter)
+
+    def filter_mods_by_search(self):
+        search_term = self.search_input.text().lower()
+
+        for i in range(self.mods_layout.count()):
+            widget = self.mods_layout.itemAt(i).widget()
+            if isinstance(widget, ModSwitch):
+                mod_name = widget.name_label.text().lower()
+                matches_search = search_term in mod_name
+                widget.setVisible(matches_search)
+
+    def show_create_modpack_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Create Modpack")
+        dialog.setFixedSize(400, 300)
+
+        layout = QVBoxLayout()
+
+        # Name input
+        name_label = QLabel("Modpack Name:")
+        name_label.setStyleSheet("color: white;")
+        self.modpack_name_input = QLineEdit()
+        self.modpack_name_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #333333;
+                color: white;
+                border: 1px solid #444444;
+                border-radius: 5px;
+                padding: 5px 10px;
+            }
+        """)
+
+        # Image selection
+        image_label = QLabel("Modpack Image:")
+        image_label.setStyleSheet("color: white;")
+
+        self.image_path = ""
+        self.image_preview = QLabel()
+        self.image_preview.setFixedSize(100, 100)
+        self.image_preview.setStyleSheet("background-color: #333333; border-radius: 5px;")
+
+        btn_select_image = QPushButton("Select Image")
+        btn_select_image.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        btn_select_image.clicked.connect(self.select_modpack_image)
+
+        # Buttons
+        btn_frame = QFrame()
+        btn_layout = QHBoxLayout()
+
+        btn_create = QPushButton("Create")
+        btn_create.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+            }
+            QPushButton:hover {
+                background-color: #5CBF5C;
+            }
+        """)
+        btn_create.clicked.connect(lambda: self.create_modpack(dialog))
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+            }
+            QPushButton:hover {
+                background-color: #ff5346;
+            }
+        """)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        btn_layout.addWidget(btn_create)
+        btn_layout.addWidget(btn_cancel)
+        btn_frame.setLayout(btn_layout)
+
+        # Add widgets to layout
+        layout.addWidget(name_label)
+        layout.addWidget(self.modpack_name_input)
+        layout.addWidget(image_label)
+        layout.addWidget(self.image_preview)
+        layout.addWidget(btn_select_image)
+        layout.addStretch()
+        layout.addWidget(btn_frame)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def select_modpack_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Modpack Image",
+            "",
+            "Image Files (*.png *.jpg *.jpeg)")
+
+        if file_path:
+            self.image_path = file_path
+            img = Image.open(file_path)
+            img = img.resize((100, 100))
+            img.save("temp_preview.png")
+            pixmap = QPixmap("temp_preview.png")
+            os.remove("temp_preview.png")
+            self.image_preview.setPixmap(pixmap)
+
+    def create_modpack(self, dialog):
+        name = self.modpack_name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Warning", "Please enter a modpack name.")
+            return
+
+        loading_dialog = LoadingDialog(self, "Creating modpack...")
+        loading_dialog.show()
+
+        # Create modpack in a separate thread
+        self.create_thread = CreateModpackThread(name, self.image_path)
+        self.create_thread.finished.connect(lambda: self.on_modpack_created(name, loading_dialog, dialog))
+        self.create_thread.start()
+
+    def on_modpack_created(self, modpack_name, loading_dialog, dialog):
+        loading_dialog.close()
+
+        if modpack_name not in self.modpacks:
+            self.modpacks.append(modpack_name)
+
+        self.update_modpacks_display()
+        dialog.accept()
+        QMessageBox.information(self, "Success", f"Modpack '{modpack_name}' created successfully!")
+
+    def import_modpack(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Modpack",
+            "",
+            "RoForge Modpack (*.roforgepack)")
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r') as f:
+                imported_mod_state = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read import file: {str(e)}")
+            return
+
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Import Modpack")
+        dialog.setLabelText("Enter a name for the new imported modpack:")
+        dialog.setStyleSheet("""
+                    QInputDialog {
+                        background-color: #2a2a2a;
+                        color: white;
+                    }
+                    QLabel {
+                        color: white;
+                    }
+                    QLineEdit {
+                        background-color: #333333;
+                        color: white;
+                        border: 1px solid #444444;
+                    }
+                """)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_modpack_name = dialog.textValue().strip()
+            if not new_modpack_name:
+                QMessageBox.warning(self, "Warning", "Please enter a modpack name.")
+                return
+
+            if new_modpack_name in self.modpacks:
+                QMessageBox.warning(self, "Warning", f"A modpack named '{new_modpack_name}' already exists.")
+                return
+
+            loading_dialog = LoadingDialog(self, f"Importing modpack '{new_modpack_name}'...")
+            loading_dialog.show()
+
+            # Import modpack in a separate thread
+            self.import_thread = ImportModpackThread(new_modpack_name, imported_mod_state)
+            self.import_thread.finished.connect(lambda: self.on_modpack_imported(new_modpack_name, loading_dialog))
+            self.import_thread.start()
+
+    def on_modpack_imported(self, modpack_name, loading_dialog):
+        loading_dialog.close()
+
+        if modpack_name not in self.modpacks:
+            self.modpacks.append(modpack_name)
+
+        self.update_modpacks_display()
+        self.select_modpack(modpack_name)
+        QMessageBox.information(self, "Success", f"Modpack '{modpack_name}' imported successfully!")
+
+    def launch_modpack(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        try:
+            roblox_path = os.path.join(self.modpacks_dir, self.selected_modpack, "RobloxCopy")
+            version = os.listdir(roblox_path)[0]
+            roblox_exe_path = os.path.join(roblox_path, version, "RobloxPlayerBeta.exe")
+
+            subprocess.Popen([roblox_exe_path])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to launch modpack: {str(e)}")
+
+    def update_modpack(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        loading_dialog = LoadingDialog(self, "Updating modpack...")
+        loading_dialog.show()
+
+        # Update modpack in a separate thread
+        self.update_thread = UpdateModpackThread(self.selected_modpack)
+        self.update_thread.finished.connect(lambda: self.on_modpack_updated(loading_dialog))
+        self.update_thread.start()
+
+    def on_modpack_updated(self, loading_dialog):
+        loading_dialog.close()
+        QMessageBox.information(self, "Success", "Modpack updated successfully!")
+
+    def export_modpack(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        mod_state_path = os.path.join(self.modpacks_dir, self.selected_modpack, "mod_state.json")
+        if not os.path.exists(mod_state_path):
+            QMessageBox.critical(self, "Error", f"Mod state file not found for '{self.selected_modpack}'")
+            return
+
+        try:
+            with open(mod_state_path, 'r') as f:
+                mod_state = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read mod state: {str(e)}")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Modpack",
+            f"{self.selected_modpack}.roforgepack",
+            "RoForge Modpack (*.roforgepack)")
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(mod_state, f, indent=4)
+
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Modpack '{self.selected_modpack}' exported to:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export modpack: {str(e)}")
+
+    def delete_modpack(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete the modpack '{self.selected_modpack}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        try:
+            modpack_path = os.path.join(self.modpacks_dir, self.selected_modpack)
+            shutil.rmtree(modpack_path)
+
+            self.modpacks.remove(self.selected_modpack)
+            self.selected_modpack = None
+            selected_modpack = self.selected_modpack
+            self.update_modpacks_display()
+
+            # Switch back to modpacks page
+            self.stacked_widget.setCurrentIndex(0)
+
+            QMessageBox.information(self, "Success", "Modpack deleted successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete modpack: {str(e)}")
+
+    def show_fflag_editor(self):
+        if not self.selected_modpack:
+            QMessageBox.warning(self, "Warning", "Please select a modpack first.")
+            return
+
+        try:
+            roblox_path = os.path.join(self.modpacks_dir, self.selected_modpack, "RobloxCopy")
+            version = os.listdir(roblox_path)[0]
+            settings_path = os.path.join(roblox_path, version, "ClientSettings", "ClientAppSettings.json")
+
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Fast Flags Editor")
+            dialog.setMinimumSize(800, 600)
+
+            layout = QVBoxLayout()
+
+            # Create toolbar for presets
+            toolbar = QToolBar()
+
+            # Save preset button
+            save_preset_action = QAction("Save Preset", dialog)
+            save_preset_action.setIcon(QIcon.fromTheme("document-save"))
+            save_preset_action.triggered.connect(lambda: self.save_fflag_preset(editor.toPlainText()))
+            toolbar.addAction(save_preset_action)
+
+            # Load preset button
+            load_preset_action = QAction("Load Preset", dialog)
+            load_preset_action.setIcon(QIcon.fromTheme("document-open"))
+            load_preset_action.triggered.connect(lambda: self.load_fflag_preset(editor))
+            toolbar.addAction(load_preset_action)
+
+            # Add separator
+            toolbar.addSeparator()
+
+            # Add clear button
+            clear_action = QAction("Clear Flags", dialog)
+            clear_action.setIcon(QIcon.fromTheme("edit-clear"))
+            clear_action.triggered.connect(lambda: editor.setPlainText("{}"))
+            toolbar.addAction(clear_action)
+
+            layout.addWidget(toolbar)
+
+            editor = QTextEdit()
+            editor.setPlainText(json.dumps(settings, indent=4))
+            editor.setStyleSheet("""
+                QTextEdit {
+                    background-color: #333333;
+                    color: white;
+                    font-family: Consolas, monospace;
+                    font-size: 12px;
+                }
+            """)
+
+            btn_frame = QFrame()
+            btn_layout = QHBoxLayout()
+
+            btn_save = QPushButton("Save")
+            btn_save.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 15px;
+                }
+                QPushButton:hover {
+                    background-color: #5CBF5C;
+                }
+            """)
+            btn_save.clicked.connect(lambda: self.save_fflags(editor.toPlainText(), dialog))
+
+            btn_cancel = QPushButton("Cancel")
+            btn_cancel.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 15px;
+                }
+                QPushButton:hover {
+                    background-color: #ff5346;
+                }
+            """)
+            btn_cancel.clicked.connect(dialog.reject)
+
+            btn_layout.addWidget(btn_save)
+            btn_layout.addWidget(btn_cancel)
+            btn_frame.setLayout(btn_layout)
+
+            layout.addWidget(editor)
+            layout.addWidget(btn_frame)
+            dialog.setLayout(layout)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open FFlag editor: {str(e)}")
+
+    def save_fflag_preset(self, fflags_text):
+        try:
+            # Validate JSON first
+            json.loads(fflags_text)
+
+            # Get preset name
+            name, ok = QInputDialog.getText(
+                self,
+                "Save Preset",
+                "Enter a name for this preset:",
+                QLineEdit.EchoMode.Normal,
+                "")
+
+            if not ok or not name.strip():
+                return
+
+            # Create presets directory if it doesn't exist
+            presets_dir = os.path.join(os.path.dirname(__file__), "Presets")
+            if not os.path.exists(presets_dir):
+                os.makedirs(presets_dir)
+
+            # Save preset
+            preset_path = os.path.join(presets_dir, f"{name}.json")
+            with open(preset_path, 'w') as f:
+                f.write(fflags_text)
+
+            QMessageBox.information(self, "Success", f"Preset '{name}' saved successfully!")
+        except json.JSONDecodeError:
+            QMessageBox.critical(self, "Error", "Invalid JSON content. Please check the syntax.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save preset: {str(e)}")
+
+    def load_fflag_preset(self, editor):
+        try:
+            # Get presets directory
+            presets_dir = os.path.join(os.path.dirname(__file__), "Presets")
+            if not os.path.exists(presets_dir):
+                QMessageBox.information(self, "Info", "No presets found.")
+                return
+
+            # Get list of presets
+            presets = [f[:-5] for f in os.listdir(presets_dir) if f.endswith('.json')]
+            if not presets:
+                QMessageBox.information(self, "Info", "No presets found.")
+                return
+
+            # Show selection dialog
+            preset, ok = QInputDialog.getItem(
+                self,
+                "Load Preset",
+                "Select a preset to load:",
+                presets,
+                0,
+                False)
+
+            if not ok:
+                return
+
+            # Load selected preset
+            preset_path = os.path.join(presets_dir, f"{preset}.json")
+            with open(preset_path, 'r') as f:
+                preset_data = f.read()
+
+            # Validate JSON
+            json.loads(preset_data)
+
+            # Update editor
+            editor.setPlainText(preset_data)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load preset: {str(e)}")
+
+    def save_fflags(self, fflags_text, dialog):
+        try:
+            settings = json.loads(fflags_text)
+
+            roblox_path = os.path.join(self.modpacks_dir, self.selected_modpack, "RobloxCopy")
+            version = os.listdir(roblox_path)[0]
+            settings_path = os.path.join(roblox_path, version, "ClientSettings", "ClientAppSettings.json")
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
+
+            QMessageBox.information(self, "Success", "Fast flags saved successfully!")
+            dialog.accept()
+        except json.JSONDecodeError:
+            QMessageBox.critical(self, "Error", "Invalid JSON content. Please check the syntax.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save fast flags: {str(e)}")
+
+    def toggle_multi_roblox(self, state):
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.GetCurrentProcess()
+        mutexes = [
+            "ROBLOX_singletonMutex",
+            "ROBLOX_singletonEvent",
+            "ROBLOX_SingletonEvent",
+            "RobloxMultiplayerPipe",
+            "RobloxGameExplorer"
+        ]
+        mutex_handles = []
+
+        if state:
+            for mutex_name in mutexes:
+                mutex = kernel32.CreateMutexW(None, False, mutex_name)
+                if mutex == 0:
+                    continue
+                mutex_handles.append(mutex)
+            print("Enabled multi-instance")
+        else:
+            for mutex_name in mutexes:
+                mutex = kernel32.OpenMutexW(0x0001, False, mutex_name)
+                if mutex == 0:
+                    continue
+                kernel32.ReleaseMutex(mutex)
+                kernel32.CloseHandle(mutex)
+            print("Disabled multi-instance")
+
+class CreateModpackThread(QThread):
+        def __init__(self, name, image_path):
+            super().__init__()
+            self.name = name
+            self.image_path = image_path
+
+        def run(self):
+            try:
+                folder = get_roblox_folder()
+                if folder is None:
+                    self.finished.emit()
+                    return
+
+                version = os.path.basename(folder)
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                modpack_folder = os.path.join(script_dir, "ModPacks", self.name)
+
+                if os.path.exists(modpack_folder):
+                    self.finished.emit()
+                    return
+
+                modpacks_dir = os.path.join(script_dir, "ModPacks")
+                if not os.path.exists(modpacks_dir):
+                    os.makedirs(modpacks_dir)
+
+                dst_folder = os.path.join(modpack_folder, "RobloxCopy", version)
+                shutil.copytree(folder, dst_folder, copy_function=shutil.copy2, dirs_exist_ok=True)
+
+                settings_folder = os.path.join(dst_folder, "ClientSettings")
+                os.makedirs(settings_folder, exist_ok=True)
+                settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
+                if not os.path.exists(settings_file):
+                    with open(settings_file, "w") as f:
+                        json.dump({}, f, indent=4)
+
+                # Initialize mod state file with all mods set to False
+                mod_state_path = os.path.join(modpack_folder, "mod_state.json")
+                mod_state = {internal_name: False for internal_name in MOD_NAME_MAPPING.values()}
+
+                # Add external mods if they exist
+                external_mods = load_external_mods()
+                for internal_name in external_mods.keys():
+                    mod_state[internal_name] = False
+
+                with open(mod_state_path, "w") as f:
+                    json.dump(mod_state, f, indent=4)
+
+                target_image_path = os.path.join(modpack_folder, "image.png")
+                if self.image_path and os.path.exists(self.image_path):
+                    shutil.copy(self.image_path, target_image_path)
+                else:
+                    default_img = os.path.join("assets", "images", "play.png")
+                    if os.path.exists(default_img):
+                        shutil.copy(default_img, target_image_path)
+
+                self.finished.emit()
+            except Exception as e:
+                print(f"Error creating modpack: {str(e)}")
+                self.finished.emit()
+
+class ImportModpackThread(QThread):
+        def __init__(self, name, mod_state):
+            super().__init__()
+            self.name = name
+            self.mod_state = mod_state
+
+        def run(self):
+            try:
+                folder = get_roblox_folder()
+                if folder is None:
+                    self.finished.emit()
+                    return
+
+                version = os.path.basename(folder)
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                modpack_folder = os.path.join(script_dir, "ModPacks", self.name)
+
+                if os.path.exists(modpack_folder):
+                    self.finished.emit()
+                    return
+
+                modpacks_dir = os.path.join(script_dir, "ModPacks")
+                if not os.path.exists(modpacks_dir):
+                    os.makedirs(modpacks_dir)
+
+                dst_folder = os.path.join(modpack_folder, "RobloxCopy", version)
+                shutil.copytree(folder, dst_folder, copy_function=shutil.copy2, dirs_exist_ok=True)
+
+                settings_folder = os.path.join(dst_folder, "ClientSettings")
+                os.makedirs(settings_folder, exist_ok=True)
+                settings_file = os.path.join(settings_folder, "ClientAppSettings.json")
+                if not os.path.exists(settings_file):
+                    with open(settings_file, "w") as f:
+                        json.dump({}, f, indent=4)
+
+                # Initialize any missing mod states
+                default_mod_state = {internal_name: False for internal_name in MOD_NAME_MAPPING.values()}
+                for mod in self.mod_state:
+                    default_mod_state[mod] = self.mod_state[mod]
+
+                # Add external mods if they exist
+                external_mods = load_external_mods()
+                for internal_name in external_mods.keys():
+                    if internal_name not in default_mod_state:
+                        default_mod_state[internal_name] = False
+
+                mod_state_path = os.path.join(modpack_folder, "mod_state.json")
+                with open(mod_state_path, "w") as f:
+                    json.dump(default_mod_state, f, indent=4)
+
+                target_image_path = os.path.join(modpack_folder, "image.png")
+                default_img = os.path.join("assets", "images", "play.png")
+                if os.path.exists(default_img):
+                    shutil.copy(default_img, target_image_path)
+
+                self.finished.emit()
+            except Exception as e:
+                print(f"Error importing modpack: {str(e)}")
+                self.finished.emit()
+
+class UpdateModpackThread(QThread):
+        def __init__(self, modpack_name):
+            super().__init__()
+            self.modpack_name = modpack_name
+
+        def run(self):
+            try:
+                current_roblox_path = get_roblox_folder()
+                if not current_roblox_path:
+                    self.finished.emit()
+                    return
+
+                current_version = os.path.basename(current_roblox_path)
+                modpack_dir = os.path.join(os.path.dirname(__file__), "ModPacks", self.modpack_name)
+                roblox_copy_dir = os.path.join(modpack_dir, "RobloxCopy")
+
+                existing_versions = os.listdir(roblox_copy_dir)
+                if not existing_versions:
+                    self.finished.emit()
+                    return
+
+                existing_version = existing_versions[0]
+                if existing_version == current_version:
+                    self.finished.emit()
+                    return
+
+                mod_state_path = os.path.join(modpack_dir, "mod_state.json")
+                with open(mod_state_path, "r") as f:
+                    mod_states = json.load(f)
+
+                shutil.rmtree(roblox_copy_dir)
+                new_version_path = os.path.join(roblox_copy_dir, current_version)
+                shutil.copytree(current_roblox_path, new_version_path)
+
+                settings_dir = os.path.join(new_version_path, "ClientSettings")
+                os.makedirs(settings_dir, exist_ok=True)
+                settings_file = os.path.join(settings_dir, "ClientAppSettings.json")
+                if not os.path.exists(settings_file):
+                    with open(settings_file, "w") as f:
+                        json.dump({}, f, indent=4)
+
+                reapply_enabled_mods(self.modpack_name)
+                self.finished.emit()
+            except Exception as e:
+                print(f"Error updating modpack: {str(e)}")
+                self.finished.emit()
+
+if __name__ == "__main__":
+    app = QApplication([])
+
+    # Set dark theme
+    app.setStyle("Fusion")
+    dark_palette = app.palette()
+    dark_palette.setColor(dark_palette.ColorRole.Window, QColor(53, 53, 53))
+    dark_palette.setColor(dark_palette.ColorRole.WindowText, Qt.GlobalColor.white)
+    dark_palette.setColor(dark_palette.ColorRole.Base, QColor(35, 35, 35))
+    dark_palette.setColor(dark_palette.ColorRole.AlternateBase, QColor(53, 53, 53))
+    dark_palette.setColor(dark_palette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+    dark_palette.setColor(dark_palette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+    dark_palette.setColor(dark_palette.ColorRole.Text, Qt.GlobalColor.white)
+    dark_palette.setColor(dark_palette.ColorRole.Button, QColor(53, 53, 53))
+    dark_palette.setColor(dark_palette.ColorRole.ButtonText, Qt.GlobalColor.white)
+    dark_palette.setColor(dark_palette.ColorRole.BrightText, Qt.GlobalColor.red)
+    dark_palette.setColor(dark_palette.ColorRole.Link, QColor(42, 130, 218))
+    dark_palette.setColor(dark_palette.ColorRole.Highlight, QColor(42, 130, 218))
+    dark_palette.setColor(dark_palette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+    app.setPalette(dark_palette)
+
+    window = MainWindow()
+    window.show()
+    app.exec()
